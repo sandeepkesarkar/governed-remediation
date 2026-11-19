@@ -1,0 +1,46 @@
+# Spike S11: similarity match on Semgrep findings. Thrown away after the note is written.
+# Same pinned images as S3. No ports. Source and results live in labelled volumes.
+include:
+  - ../../compose.yaml
+
+name: governed-remediation
+
+x-labels: &labels
+  project: governed-remediation
+
+volumes:
+  s11-src:
+    labels: *labels
+  s11-out:
+    labels: *labels
+
+services:
+  git-clone:
+    image: alpine/git:v2.54.0@sha256:6a1fdb962814ca11508ca8d1bab94375b5b7ac4e4a9a40981c29fc32c02f095d
+    platform: linux/arm64
+    labels: *labels
+    networks: [project-net]
+    profiles: [tools]
+    volumes: [ "s11-src:/src" ]
+    entrypoint: ["git"]
+
+  semgrep:
+    image: semgrep/semgrep:1.185.0@sha256:67518c174185a2043fdbed16c70631b79209499b3671178e7194379b48295a0d
+    platform: linux/arm64
+    labels: *labels
+    networks: [project-net]
+    profiles: [tools]
+    environment:
+      SEMGREP_ENABLE_VERSION_CHECK: "0"
+    volumes: [ "s11-src:/src:ro", "s11-out:/out" ]
+    working_dir: /src/juice-shop
+
+  # Reads the source and results volumes and prints what the analysis needs. Same Python as spikes/pulled-images.txt.
+  py:
+    image: python:3.13.18-alpine3.24@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e
+    platform: linux/arm64
+    labels: *labels
+    networks: [project-net]
+    profiles: [tools]
+    volumes: [ "s11-src:/src:ro", "s11-out:/out", "./:/spike:ro" ]
+    working_dir: /spike

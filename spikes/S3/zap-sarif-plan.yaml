@@ -1,0 +1,24 @@
+# ZAP Automation Framework plan: short spider, passive scan, SARIF report. Target is the project-network name only.
+env:
+  contexts:
+    - name: juice
+      urls: ["http://juice-shop:3000"]
+      includePaths: ["http://juice-shop:3000.*"]
+  parameters:
+    failOnError: true
+    progressToStdout: true
+jobs:
+  - type: spider
+    parameters:
+      context: juice
+      url: http://juice-shop:3000
+      maxDuration: 1
+  - type: passiveScan-wait
+    parameters:
+      maxDuration: 3
+  - type: report
+    parameters:
+      template: sarif-json
+      reportDir: /zap/wrk
+      reportFile: zap.sarif
+      reportTitle: S3 ZAP SARIF test

@@ -1,0 +1,18 @@
+# Spike S1: Juice Shop in Docker. Thrown away after the note is written.
+# Extends the base conventions in ../../compose.yaml (project name, label, isolated network).
+include:
+  - ../../compose.yaml
+
+name: governed-remediation
+
+services:
+  juice-shop:
+    # Tag plus the index digest of the multi-arch image (linux/amd64 and linux/arm64).
+    image: bkimminich/juice-shop:v20.0.0@sha256:fd58bdc9745416afce8184ee0666278a436574633ea7880365153a63bfd418b0
+    container_name: s1-juice-shop
+    platform: linux/arm64            # native on Apple silicon. No emulation.
+    labels:
+      project: governed-remediation
+    networks: [project-net]
+    ports:
+      - "127.0.0.1:3000:3000"        # loopback only

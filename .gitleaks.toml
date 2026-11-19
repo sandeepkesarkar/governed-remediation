@@ -1,0 +1,140 @@
+# Secrets scan settings (gitleaks, see docs/ENVIRONMENT.md). Run with: make scan-secrets
+# Uses gitleaks' default rules. Everything below is an allowlist by EXACT PATH. There are no
+# folder patterns and no line-based fingerprints (the fixer's edits move lines).
+# Do not add an entry without the owner's go-ahead. Every entry is listed in app/PROVENANCE.md.
+[extend]
+useDefault = true
+
+# Group 1: intentionally fake key files that Juice Shop ships (listed in app/PROVENANCE.md).
+[[allowlists]]
+description = "Intentionally fake keys shipped by Juice Shop"
+paths = [
+  '''(^|/)app/lib/insecurity\.ts$''',                # hard-coded fake RSA key used by challenges
+  '''(^|/)app/encryptionkeys/jwt\.pub$''',            # public key that matches it
+  '''(^|/)app/encryptionkeys/premium\.key$''',        # key for a challenge
+  '''(^|/)app/ctf\.key$''',                           # key file for the CTF mode
+  '''(^|/)app/ftp/package-lock\.json\.bak$''',        # lockfile in the downloadable ftp folder
+]
+
+# Group 2: findings in Juice Shop's own source, sample data and tests. One entry per file,
+# scoped to the rule IDs that fired there (targetRules).
+[[allowlists]]
+# sample data: Juice Shop's own sample users (seed data for the demo shop). Fired: generic-api-key x2.
+description = "Upstream sample data file: app/data/static/users.yml"
+targetRules = ["generic-api-key"]
+paths = ['''(^|/)app/data/static/users\.yml$''']
+
+[[allowlists]]
+# test: a fake credential or token in upstream's own test. Fired: jwt x1.
+description = "Upstream test file: app/frontend/src/app/app.guard.spec.ts"
+targetRules = ["jwt"]
+paths = ['''(^|/)app/frontend/src/app/app\.guard\.spec\.ts$''']
+
+[[allowlists]]
+# source: a public blockchain contract address in Juice Shop's own web3 challenge code. Fired: generic-api-key x1.
+description = "Upstream source file: app/frontend/src/app/faucet/faucet.component.ts"
+targetRules = ["generic-api-key"]
+paths = ['''(^|/)app/frontend/src/app/faucet/faucet\.component\.ts$''']
+
+[[allowlists]]
+# test: a fake credential or token in upstream's own test. Fired: generic-api-key x1, jwt x1.
+description = "Upstream test file: app/frontend/src/app/last-login-ip/last-login-ip.component.spec.ts"
+targetRules = ["generic-api-key", "jwt"]
+paths = ['''(^|/)app/frontend/src/app/last-login-ip/last-login-ip\.component\.spec\.ts$''']
+
+[[allowlists]]
+# test: a fake credential or token in upstream's own test. Fired: generic-api-key x3.
+description = "Upstream test file: app/frontend/src/app/oauth/oauth.component.spec.ts"
+targetRules = ["generic-api-key"]
+paths = ['''(^|/)app/frontend/src/app/oauth/oauth\.component\.spec\.ts$''']
+
+[[allowlists]]
+# source: a hard-coded login check for one of Juice Shop's own challenges (an OAuth user password, base64-encoded on purpose). Fired: generic-api-key x1.
+description = "Upstream source file: app/routes/login.ts"
+targetRules = ["generic-api-key"]
+paths = ['''(^|/)app/routes/login\.ts$''']
+
+[[allowlists]]
+# test: a fake credential or token in upstream's own test. Fired: generic-api-key x12.
+description = "Upstream test file: app/test/api/2fa.test.ts"
+targetRules = ["generic-api-key"]
+paths = ['''(^|/)app/test/api/2fa\.test\.ts$''']
+
+[[allowlists]]
+# test: a fake credential or token in upstream's own test. Fired: generic-api-key x1.
+description = "Upstream test file: app/test/api/basket.test.ts"
+targetRules = ["generic-api-key"]
+paths = ['''(^|/)app/test/api/basket\.test\.ts$''']
+
+[[allowlists]]
+# test: a fake credential or token in upstream's own test. Fired: generic-api-key x3.
+description = "Upstream test file: app/test/api/data-export.test.ts"
+targetRules = ["generic-api-key"]
+paths = ['''(^|/)app/test/api/data-export\.test\.ts$''']
+
+[[allowlists]]
+# test: a fake credential or token in upstream's own test. Fired: generic-api-key x6.
+description = "Upstream test file: app/test/api/erasure-request.test.ts"
+targetRules = ["generic-api-key"]
+paths = ['''(^|/)app/test/api/erasure-request\.test\.ts$''']
+
+[[allowlists]]
+# test: a fake credential or token in upstream's own test. Fired: generic-api-key x2.
+description = "Upstream test file: app/test/api/feedback.test.ts"
+targetRules = ["generic-api-key"]
+paths = ['''(^|/)app/test/api/feedback\.test\.ts$''']
+
+[[allowlists]]
+# test: a fake credential or token in upstream's own test. Fired: generic-api-key x3.
+description = "Upstream test file: app/test/api/login.test.ts"
+targetRules = ["generic-api-key"]
+paths = ['''(^|/)app/test/api/login\.test\.ts$''']
+
+[[allowlists]]
+# test: a fake credential or token in upstream's own test. Fired: generic-api-key x2.
+description = "Upstream test file: app/test/api/product-review.test.ts"
+targetRules = ["generic-api-key"]
+paths = ['''(^|/)app/test/api/product-review\.test\.ts$''']
+
+[[allowlists]]
+# test: a fake credential or token in upstream's own test. Fired: generic-api-key x5, jwt x1.
+description = "Upstream test file: app/test/api/user.test.ts"
+targetRules = ["generic-api-key", "jwt"]
+paths = ['''(^|/)app/test/api/user\.test\.ts$''']
+
+[[allowlists]]
+# test: a fake credential or token in upstream's own test. Fired: generic-api-key x3.
+description = "Upstream test file: app/test/api/web3.test.ts"
+targetRules = ["generic-api-key"]
+paths = ['''(^|/)app/test/api/web3\.test\.ts$''']
+
+[[allowlists]]
+# test: a fake credential or token in upstream's own test. Fired: jwt x2.
+description = "Upstream test file: app/test/cypress/e2e/forgedJwt.spec.ts"
+targetRules = ["jwt"]
+paths = ['''(^|/)app/test/cypress/e2e/forgedJwt\.spec\.ts$''']
+
+[[allowlists]]
+# test: a fake credential or token in upstream's own test. Fired: generic-api-key x1.
+description = "Upstream test file: app/test/cypress/e2e/login.spec.ts"
+targetRules = ["generic-api-key"]
+paths = ['''(^|/)app/test/cypress/e2e/login\.spec\.ts$''']
+
+[[allowlists]]
+# test: a fake credential or token in upstream's own test. Fired: generic-api-key x1.
+description = "Upstream test file: app/test/cypress/e2e/totpSetup.spec.ts"
+targetRules = ["generic-api-key"]
+paths = ['''(^|/)app/test/cypress/e2e/totpSetup\.spec\.ts$''']
+
+[[allowlists]]
+# test: a fake credential or token in upstream's own test. Fired: jwt x2.
+description = "Upstream test file: app/test/server/currentUserSpec.ts"
+targetRules = ["jwt"]
+paths = ['''(^|/)app/test/server/currentUserSpec\.ts$''']
+
+[[allowlists]]
+# test: a fake credential or token in upstream's own test. Fired: jwt x4.
+description = "Upstream test file: app/test/server/verifySpec.ts"
+targetRules = ["jwt"]
+paths = ['''(^|/)app/test/server/verifySpec\.ts$''']
+

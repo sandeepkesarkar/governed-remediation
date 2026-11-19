@@ -1,0 +1,7 @@
+clone svc=git-clone exit=0 seconds=6.1 peak_mem_mib=4.9 samples=1
+semgrep svc=semgrep exit=0 seconds=43.5 peak_mem_mib=625.8 samples=11
+trivy-fs svc=trivy exit=0 seconds=13.5 peak_mem_mib=80.0 samples=6
+trivy-fs-sarif svc=trivy exit=0 seconds=0.3 peak_mem_mib=n/a samples=0
+trivy-image svc=trivy exit=0 seconds=6.6 peak_mem_mib=74.4 samples=3
+trivy-image-sarif svc=trivy exit=0 seconds=0.2 peak_mem_mib=n/a samples=0
+zap-baseline svc=zap exit=0 seconds=45.5 peak_mem_mib=829.7 samples=22

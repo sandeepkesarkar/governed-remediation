@@ -1,0 +1,4 @@
+# Source cloned for a Docker build context. Never committed. Deleted at the end of the spike.
+src/
+src-fixed/
+results.log

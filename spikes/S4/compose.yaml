@@ -1,0 +1,78 @@
+# Spike S4: exploit the login SQL injection. Thrown away after the note is written.
+# Extends the base conventions in ../../compose.yaml (project name, label, isolated network).
+# No service publishes a host port. The exploit reaches a target only by its service
+# name on the project network.
+include:
+  - ../../compose.yaml
+
+name: governed-remediation
+
+x-labels: &labels
+  project: governed-remediation
+
+services:
+  # Step 3: the official image.
+  juice-shop-official:
+    image: bkimminich/juice-shop:v20.0.0@sha256:fd58bdc9745416afce8184ee0666278a436574633ea7880365153a63bfd418b0
+    platform: linux/arm64
+    labels: *labels
+    networks: [project-net]
+    profiles: [official]
+
+  # Step 4: built from source at v20.0.0, unmodified. Context is ./src, a git-ignored
+  # folder cloned by the git-clone service below. Deleted at the end of the spike.
+  juice-shop-source:
+    build:
+      context: ./src
+      labels: *labels
+    platform: linux/arm64
+    labels: *labels
+    networks: [project-net]
+    profiles: [source]
+
+  # Step 5: same build, from a throwaway copy of the source with one line changed.
+  # Context is ./src-fixed, also git-ignored and deleted at the end.
+  juice-shop-fixed:
+    build:
+      context: ./src-fixed
+      labels: *labels
+    platform: linux/arm64
+    labels: *labels
+    networks: [project-net]
+    profiles: [fixed]
+
+  # Clones the tag into a host folder used only as a Docker build context.
+  # Nothing from it runs on the Mac.
+  git-clone:
+    image: alpine/git:v2.54.0@sha256:6a1fdb962814ca11508ca8d1bab94375b5b7ac4e4a9a40981c29fc32c02f095d
+    platform: linux/arm64
+    labels: *labels
+    networks: [project-net]
+    profiles: [tools]
+    volumes:
+      - ./src:/out
+    entrypoint: ["git"]
+
+  # A plain shell, used once to copy ./src to ./src-fixed inside a container
+  # rather than on the Mac, and to apply the one-line fix there.
+  copy-src:
+    image: alpine/git:v2.54.0@sha256:6a1fdb962814ca11508ca8d1bab94375b5b7ac4e4a9a40981c29fc32c02f095d
+    platform: linux/arm64
+    labels: *labels
+    networks: [project-net]
+    profiles: [tools]
+    volumes:
+      - ./src:/src:ro
+      - ./src-fixed:/src-fixed
+    entrypoint: ["sh"]
+
+  # The exploit / control / verify-login scripts, built once from Dockerfile.probe.
+  probe:
+    build:
+      context: .
+      dockerfile: Dockerfile.probe
+      labels: *labels
+    platform: linux/arm64
+    labels: *labels
+    networks: [project-net]
+    profiles: [tools]

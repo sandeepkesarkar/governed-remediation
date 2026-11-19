@@ -1,0 +1,50 @@
+# Base Compose file. It defines the conventions. It has no real services yet.
+#
+# Conventions every service must follow:
+#   1. Carry the project label (use the *labels anchor below).
+#   2. Join the isolated project network and no other.
+#   3. Publish ports on 127.0.0.1 only, never on 0.0.0.0.
+#   4. Pin the image to a version. Never use "latest".
+#   5. Mount no home folder and pass no cloud credentials.
+
+name: governed-remediation
+
+x-labels: &labels
+  project: governed-remediation
+
+networks:
+  project-net:
+    driver: bridge
+    labels: *labels
+
+# Named volumes also carry the label:
+#
+# volumes:
+#   example-data:
+#     labels: *labels
+
+services:
+  # Juice Shop built from app/ by "make build-app". Started by "make up" (scripts/up.sh).
+  juice-shop-prod:
+    image: governed-remediation/juice-shop:v20.0.0-local   # built locally, never pulled
+    pull_policy: never
+    container_name: gr-juice-shop
+    platform: linux/arm64            # native on Apple silicon. No emulation.
+    labels: *labels
+    networks: [project-net]
+    ports:
+      - "127.0.0.1:3000:3000"        # loopback only. The same port S1 used.
+
+  # Example only. Copy this shape for a real service.
+  #
+  # example:
+  #   image: example/image:1.2.3        # pinned version
+  #   labels: *labels                   # project label
+  #   networks: [project-net]           # isolated network
+  #   ports:
+  #     - "127.0.0.1:8080:8080"         # loopback only: host-ip:host-port:container-port
+  #
+  # Images we build need the label too:
+  #   build:
+  #     context: .
+  #     labels: *labels

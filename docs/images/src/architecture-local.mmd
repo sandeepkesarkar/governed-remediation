@@ -1,0 +1,47 @@
+---
+title: Local architecture (design view). Dashed = planned (M4) or from M3, not built.
+---
+flowchart LR
+  subgraph MAC["Mac, no Juice Shop installed"]
+    CMD["Loop commands<br/>one command per step"]
+    DESK["OpenHands desktop app<br/>window only, from M3"]
+  end
+
+  subgraph DOCKER["Docker: labelled project=governed-remediation, loopback only"]
+    SCAN["Scanners<br/>Semgrep, Trivy, ZAP"]
+    OUT[("Output folder<br/>SARIF, evidence, logs")]
+    PROD["Juice Shop: production<br/>127.0.0.1:3000"]
+    EXP["Exploit runner"]
+    FIX["OpenHands fixer, in a sandbox<br/>works on a throwaway copy<br/>that keeps codefixes and snippets"]
+    PRB["Pull request build<br/>throwaway container, test runner"]
+    TRI["Triage agent<br/>works on a throwaway copy<br/>with snippet comments stripped<br/>planned (M4)"]
+    JEN["Jenkins<br/>from M3"]
+  end
+
+  subgraph GH["GitHub repo"]
+    ISS["Issues: the ticket store<br/>one per file, line and CWE"]
+    PR["Pull requests with evidence"]
+    MAIN["main branch"]
+    LED["Memory ledger and cross-references<br/>decisions from collaborators only<br/>planned (M4)"]
+  end
+
+  H(("Human approver"))
+  MODEL["Model API<br/>Anthropic first, Bedrock from M3"]
+
+  CMD -->|scan| SCAN --> OUT
+  CMD -->|ticket| ISS
+  CMD -->|exploit| EXP --> PROD
+  CMD -->|fix| FIX --> PR
+  FIX -.-> MODEL
+  PR -->|verify| PRB
+  PR --> H -->|merge| MAIN
+  MAIN -->|deploy| PROD
+  DESK -.-> FIX
+  JEN -.->|replaces the verify and deploy scripts| PRB
+  ISS -.-> TRI
+  TRI -.->|verdict comment| ISS
+  TRI -.-> MODEL
+  ISS -.-> LED
+
+  classDef planned fill:#FFFFFF,stroke:#534AB7,stroke-width:2px,stroke-dasharray:6 4,color:#26215C
+  class TRI,LED,JEN,DESK planned

@@ -1,0 +1,29 @@
+---
+title: Governed-Remediation workflow loop (design view). Dashed = planned (M4), not built.
+---
+flowchart TD
+  START(["Starts with a session, a deploy or a new SARIF report"])
+  N1["1. Scan<br/>Jenkins: code and live app"]
+  N2["2. Create tickets<br/>Ticket agent, one per file, line and CWE<br/>Ticket store: GitHub Issues"]
+  N3["3. Triage<br/>Verdict comment: real, likely false positive, needs a human<br/>planned (M4)"]
+  N4["4. Fix<br/>OpenHands fixer agent"]
+  N5["5. Review and verify<br/>Reviewer agents and Jenkins"]
+  N6["6. Approve and merge<br/>Human only"]
+  N7["7. Deploy<br/>Jenkins, to production"]
+  N8["8. Confirm<br/>Exploit fails, scan is clean"]
+  N9["9. Close the ticket<br/>Ticket agent"]
+  MEM[("Memory ledger and cross-reference comments<br/>Decisions from collaborators only<br/>planned (M4)")]
+  HUM["Human makes every dismissal"]
+
+  START --> N1 --> N2 --> N3 --> N4 --> N5 --> N6 --> N7 --> N8 --> N9
+  N9 -->|next scan| N1
+  N2 -.->|match to an earlier ticket| MEM
+  MEM -.->|evidence only| N3
+  N9 -.->|record the outcome| MEM
+  N3 -.->|likely false positive| HUM
+
+  classDef planned fill:#FFFFFF,stroke:#534AB7,stroke-width:2px,stroke-dasharray:6 4,color:#26215C
+  classDef human fill:#E1F5EE,stroke:#0F6E56,color:#04342C
+  class N3,MEM planned
+  class N6,HUM human
+  linkStyle 10,11,12,13 stroke:#534AB7,stroke-dasharray:6 4

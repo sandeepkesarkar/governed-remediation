@@ -1,0 +1,64 @@
+# Spike S3: scanners against Juice Shop. Thrown away after the note is written.
+# Extends the base conventions in ../../compose.yaml (project name, label, isolated network).
+# Nothing here publishes a host port. Source and results live in labelled Docker volumes.
+include:
+  - ../../compose.yaml
+
+name: governed-remediation
+
+x-labels: &labels
+  project: governed-remediation
+
+volumes:
+  s3-src:
+    labels: *labels
+  s3-out:
+    labels: *labels
+  s3-cache:
+    labels: *labels
+
+services:
+  # Target for ZAP. No ports: reachable only on the project network as http://juice-shop:3000
+  juice-shop:
+    image: bkimminich/juice-shop:v20.0.0@sha256:fd58bdc9745416afce8184ee0666278a436574633ea7880365153a63bfd418b0
+    platform: linux/arm64
+    labels: *labels
+    networks: [project-net]
+    profiles: [target]
+
+  git-clone:
+    image: alpine/git:v2.54.0@sha256:6a1fdb962814ca11508ca8d1bab94375b5b7ac4e4a9a40981c29fc32c02f095d
+    platform: linux/arm64
+    labels: *labels
+    networks: [project-net]
+    profiles: [tools]
+    volumes: [ "s3-src:/src" ]
+    entrypoint: ["git"]
+
+  semgrep:
+    image: semgrep/semgrep:1.185.0@sha256:67518c174185a2043fdbed16c70631b79209499b3671178e7194379b48295a0d
+    platform: linux/arm64
+    labels: *labels
+    networks: [project-net]
+    profiles: [tools]
+    environment:
+      SEMGREP_ENABLE_VERSION_CHECK: "0"
+    volumes: [ "s3-src:/src:ro", "s3-out:/out" ]
+    working_dir: /src
+
+  trivy:
+    image: aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+    platform: linux/arm64
+    labels: *labels
+    networks: [project-net]
+    profiles: [tools]
+    volumes: [ "s3-src:/src:ro", "s3-out:/out", "s3-cache:/cache" ]
+
+  zap:
+    image: zaproxy/zap-stable:2.17.0@sha256:9624669db72f54d86c4b46a7064518bd9bf79d8c61a4c31befa9923489f328af
+    platform: linux/arm64
+    labels: *labels
+    networks: [project-net]
+    profiles: [tools]
+    user: root                      # needed to write to the labelled output volume
+    volumes: [ "s3-out:/zap/wrk" ]
