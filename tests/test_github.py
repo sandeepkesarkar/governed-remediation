@@ -138,7 +138,7 @@ def test_a_bad_repo_name_is_rejected():
         GitHubClient(TOKEN, "not-a-repo")
 
 
-# The default transport (urllib), with urlopen faked.
+# The default transport (urllib), with the opener faked.
 
 class FakeResponse:
     def __init__(self, status, payload):
@@ -155,37 +155,113 @@ class FakeResponse:
         return False
 
 
+def use_opener(monkeypatch, open_function):
+    """Make the default transport use open_function(req, timeout=...) instead of the network."""
+    class Opener:
+        def open(self, req, timeout=None):
+            return open_function(req, timeout=timeout)
+    monkeypatch.setattr(github.urllib.request, "build_opener", lambda *handlers: Opener())
+
+
 def test_default_transport_returns_status_and_json(monkeypatch):
     seen = {}
 
     def fake_urlopen(req, timeout=None):
         seen["req"], seen["timeout"] = req, timeout
         return FakeResponse(200, b'[{"number": 1}]')
-    monkeypatch.setattr(github.urllib.request, "urlopen", fake_urlopen)
+    use_opener(monkeypatch, fake_urlopen)
     status, data = github.urllib_transport("GET", "https://api.github.com/x", {"A": "b"}, None)
     assert (status, data) == (200, [{"number": 1}])
     assert seen["req"].get_method() == "GET" and seen["timeout"] == 30
 
 
 def test_default_transport_handles_an_empty_body(monkeypatch):
-    monkeypatch.setattr(github.urllib.request, "urlopen", lambda req, timeout=None: FakeResponse(204, b""))
+    use_opener(monkeypatch, lambda req, timeout=None: FakeResponse(204, b""))
     assert github.urllib_transport("PATCH", "https://api.github.com/x", {}, b"{}") == (204, None)
 
 
 def test_default_transport_turns_an_http_error_into_a_status(monkeypatch):
     def fake_urlopen(req, timeout=None):
         raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, io.BytesIO(b'{"message": "no"}'))
-    monkeypatch.setattr(github.urllib.request, "urlopen", fake_urlopen)
+    use_opener(monkeypatch, fake_urlopen)
     assert github.urllib_transport("GET", "https://api.github.com/x", {}, None) == (403, {"message": "no"})
 
 
 def test_default_transport_copes_with_a_body_that_is_not_json(monkeypatch):
     def fake_urlopen(req, timeout=None):
         raise urllib.error.HTTPError(req.full_url, 502, "Bad", {}, io.BytesIO(b"<html>"))
-    monkeypatch.setattr(github.urllib.request, "urlopen", fake_urlopen)
+    use_opener(monkeypatch, fake_urlopen)
     assert github.urllib_transport("GET", "https://api.github.com/x", {}, None) == (502, None)
 
 
 def test_default_transport_refuses_a_non_github_url():
     with pytest.raises(GitHubError, match="https://api.github.com"):
         github.urllib_transport("GET", "http://example.com/x", {}, None)
+
+
+# Redirects: urllib would forward the Authorization header to the new address.
+
+@pytest.mark.parametrize("code", [301, 302, 307, 308])
+def test_a_redirect_is_refused_and_the_message_has_no_token(code):
+    handler = github.NoRedirect()
+    req = github.urllib.request.Request("https://api.github.com/repos/o/r/issues",
+                                        headers={"Authorization": f"Bearer {TOKEN}"})
+    with pytest.raises(GitHubError) as e:
+        handler.redirect_request(req, None, code, "Moved", {}, f"https://evil.example/{TOKEN}")
+    assert str(e.value) == "GitHub sent a redirect. Check the repository name"
+    assert TOKEN not in str(e.value)
+
+
+def test_the_default_transport_uses_an_opener_that_refuses_redirects(monkeypatch):
+    seen = {}
+
+    class O:
+        def open(self, req, timeout=None):
+            seen["timeout"] = timeout
+            return FakeResponse(200, b"[]")
+
+    def build(*handlers):
+        seen["handlers"] = handlers
+        return O()
+    monkeypatch.setattr(github.urllib.request, "build_opener", build)
+    assert github.urllib_transport("GET", "https://api.github.com/x", {}, None) == (200, [])
+    assert github.NoRedirect in seen["handlers"]
+
+
+@pytest.mark.parametrize("code", [301, 307])
+def test_a_real_redirect_through_urllib_is_refused(code):
+    """A local server on 127.0.0.1 answers with a redirect. The real urllib machinery must not follow it."""
+    import http.server
+    import threading
+
+    hits = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits.append((self.path, self.headers.get("Authorization")))
+            if self.path == "/start":
+                self.send_response(code)
+                self.send_header("Location", "/elsewhere")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            else:
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = github.urllib.request.Request(f"http://127.0.0.1:{server.server_port}/start",
+                                            headers={"Authorization": f"Bearer {TOKEN}"})
+        with pytest.raises(GitHubError) as e:
+            github.urllib.request.build_opener(github.NoRedirect).open(req, timeout=5)
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert TOKEN not in str(e.value)
+    assert [h[0] for h in hits] == ["/start"]      # the redirect target was never requested

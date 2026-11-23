@@ -28,13 +28,20 @@ class GitHubError(Exception):
     """A GitHub call failed. The message never contains the token."""
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """urllib would forward the Authorization header to the redirect target. Refuse every redirect."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise GitHubError("GitHub sent a redirect. Check the repository name")
+
+
 def urllib_transport(method, url, headers, body):
     """Send one request. Return (status, parsed JSON or None). Error statuses are returned, not raised."""
     if not url.startswith(API + "/"):
         raise GitHubError(f"refusing to call a URL that is not under {API}")
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
+        with urllib.request.build_opener(NoRedirect).open(req, timeout=TIMEOUT_SECONDS) as resp:
             status, raw = resp.status, resp.read()
     except urllib.error.HTTPError as e:
         status, raw = e.code, e.read()
