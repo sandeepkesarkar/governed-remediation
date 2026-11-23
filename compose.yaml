@@ -2,7 +2,8 @@
 #
 # Conventions every service must follow:
 #   1. Carry the project label (use the *labels anchor below).
-#   2. Join the isolated project network and no other.
+#   2. Join the isolated project network and no other, unless a step (like the exploit
+#      step, M2-6) also needs the internal, egress-free network below.
 #   3. Publish ports on 127.0.0.1 only, never on 0.0.0.0.
 #   4. Pin the image to a version. Never use "latest".
 #   5. Mount no home folder and pass no cloud credentials.
@@ -15,6 +16,14 @@ x-labels: &labels
 networks:
   project-net:
     driver: bridge
+    labels: *labels
+  # Joined only by juice-shop-prod and the exploit step's one-off container
+  # (scripts/exploit.sh). "internal: true" gives it no route out at all: a container
+  # with only this network has no gateway, no DNS and no internet. Proved live by
+  # tests/network-isolation-test.sh. project-net above is untouched by this.
+  exploit-net:
+    driver: bridge
+    internal: true
     labels: *labels
 
 # Named volumes also carry the label:
@@ -31,7 +40,7 @@ services:
     container_name: gr-juice-shop
     platform: linux/arm64            # native on Apple silicon. No emulation.
     labels: *labels
-    networks: [project-net]
+    networks: [project-net, exploit-net]
     ports:
       - "127.0.0.1:3000:3000"        # loopback only. The same port S1 used.
 
