@@ -10,9 +10,9 @@ The vulnerable app is [OWASP Juice Shop](https://github.com/juice-shop/juice-sho
 
 | Milestone | What | State |
 |---|---|---|
-| M0 | Setup: repo, rules, plan, container safety baseline, public-readiness checks | Mostly done. Two owner tasks are open (spending limit on the model key, and the token for the public repo). |
+| M0 | Setup: repo, rules, plan, container safety baseline, public-readiness checks | Mostly done. Two owner tasks are open (spending limit on the model key, and the token for this repo). |
 | M1 | Local spikes: app in Docker, scanners, exploit, similarity match | Done except the fixer spike (S2a), which needs a paid model call |
-| M2 | Local thin slice: one finding through the whole loop on one Mac | Started. Done: spec, vendored Juice Shop, step "up", step "scan" with a SARIF reader. Next: the cutover to this public repo, then the ticket step. |
+| M2 | Local thin slice: one finding through the whole loop on one Mac | Started. Done: spec, vendored Juice Shop, step "up", step "scan" with a SARIF reader. The cutover to this public repo (M2-4b) is done. Next: the ticket step. |
 | M3 to M7 | Real parts in the loop, strengthen, AWS hosting, governance, CloudBees CI | Planned |
 
 The task list and its status are in [`docs/PLAN.md`](docs/PLAN.md).
