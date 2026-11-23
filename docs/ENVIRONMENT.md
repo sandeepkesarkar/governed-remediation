@@ -102,3 +102,7 @@ Our own Python code is tested in the pinned `python` image (3.13.18-alpine3.24, 
 | Pygments | 2.21.0 |
 
 The Semgrep image (`semgrep/semgrep:1.185.0`) is now also used by `make scan`, and the `python` image also by `make scan` and `make test`. Both are pinned in `scan/semgrep.conf`, `scan/python.conf` and the `Makefile`.
+
+## Ticket step
+
+`make ticket` (M2-5) runs `agents/ticket_agent/ticket.py` in the same pinned `python` image, in a labelled container with network access and no ports. It uses the Python standard library only, so **no new library or image is pinned**. It calls the GitHub REST API (`2022-11-28`) with the token in the `GITHUB_TOKEN` variable. The repo, `agents/` and `out/` are mounted read-only.
