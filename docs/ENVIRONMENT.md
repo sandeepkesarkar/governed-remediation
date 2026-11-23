@@ -38,7 +38,7 @@ Notes:
 | Python | 3.14.6 | `/usr/local/bin/python3` |
 | make | GNU Make 3.81 | `/usr/bin/make` |
 
-Our own Python tooling will run in a project virtual environment, not in this system Python.
+Our own Python tooling will run in a project virtual environment, not in this system Python. **Update, M2-4 onward:** tooling with a third-party dependency (pytest and friends) runs instead in the pinned `python` container (see below); no venv was needed. The exploit step (M2-6) is the one exception: it runs directly on the Mac with the system `python3`, standard library only, because it must reach the app container's loopback-published port from the Mac's real network stack, which a container does not see the same way (`docker run` does not reach the Mac's own 127.0.0.1). This matches `scripts/check-loopback.sh`, which also runs directly on the Mac.
 
 ## Before each session
 
@@ -106,3 +106,9 @@ The Semgrep image (`semgrep/semgrep:1.185.0`) is now also used by `make scan`, a
 ## Ticket step
 
 `make ticket` (M2-5) runs `agents/ticket_agent/ticket.py` in the same pinned `python` image, in a labelled container with network access and no ports. It uses the Python standard library only, so **no new library or image is pinned**. It calls the GitHub REST API (`2022-11-28`) with the token in the `GITHUB_TOKEN` variable. The repo, `agents/` and `out/` are mounted read-only.
+
+## Exploit step
+
+`make exploit` (M2-6) runs `agents/exploit_agent/login_sqli.py` directly on the Mac with the
+system `python3` (standard library only, **no new library or image pinned**). See the note
+above for why this step, alone among our own Python tooling, is not containerized.

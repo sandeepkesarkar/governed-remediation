@@ -5,7 +5,7 @@ FILTER      := label=$(LABEL_KEY)=$(LABEL_VALUE)
 # Images pulled from a registry carry no label. They are listed here and removed by name.
 PULLED      := spikes/pulled-images.txt
 
-.PHONY: help list clean-all diagrams build-app up down check-up test-up scan test test-scan scan-secrets ticket
+.PHONY: help list clean-all diagrams build-app up down check-up test-up scan test test-scan scan-secrets ticket exploit
 
 help:
 	@echo "make list       Show everything labelled $(LABEL_KEY)=$(LABEL_VALUE)"
@@ -18,6 +18,7 @@ help:
 	@echo "make test-up    Test the up step (needs the image from make build-app)"
 	@echo "make scan       Step scan: Semgrep on app/, SARIF to out/"
 	@echo "make ticket     Step ticket: one GitHub issue for the slice's finding (needs GITHUB_TOKEN, run make scan first)"
+	@echo "make exploit    Step exploit: run the login SQLi exploit against the app on loopback (run make up first)"
 	@echo "make test       Run the Python tests with coverage (at least 90 percent)"
 	@echo "make scan-secrets  Secrets scan of the tracked files (gitleaks, path allowlist in .gitleaks.toml)"
 	@echo "make test-scan  Test the failure cases of the scan step (runs Semgrep three times)"
@@ -104,6 +105,11 @@ test-scan:
 # Step "ticket" (specs/M2-thin-slice.md). Needs out/semgrep.sarif (make scan) and GITHUB_TOKEN.
 ticket:
 	@scripts/ticket.sh
+
+# Step "exploit" (specs/M2-thin-slice.md). Needs the app running (make up). Runs directly on
+# the Mac, not in a container: our own Python tooling, standard library only.
+exploit:
+	@scripts/exploit.sh
 
 scan-secrets:
 	@scripts/scan-secrets.sh
