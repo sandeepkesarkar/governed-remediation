@@ -48,7 +48,9 @@ def _relative_path(uri, result):
     if not isinstance(uri, str) or not uri:
         raise SarifError(f"a result has no file path ({_where(result)})")
     path = uri[2:] if uri.startswith("./") else uri
-    if path.startswith(("/", "app/")) or "://" in path or path.startswith(".."):
+    # A path may start with an app/ folder: a real repo can have one. Absolute paths, URLs
+    # and paths that climb out with ".." are rejected.
+    if path.startswith("/") or "://" in path or ".." in path.split("/"):
         raise SarifError(f"path '{uri}' is not relative to the app root. "
                          "Scan with the app folder as the root, so paths look like routes/login.ts")
     return path

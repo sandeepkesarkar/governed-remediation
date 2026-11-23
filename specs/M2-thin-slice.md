@@ -92,3 +92,14 @@ Tests come first. Our own code needs at least 90% coverage. `app/` and `spikes/`
 3. **CWE comes from Semgrep rule tags.** A result with no CWE is rejected in the slice. A rule ID to CWE map is in the parking lot.
 4. **Evidence comment:** the full comment goes on the pull request. The ticket gets a short summary under the Evidence heading that links to it.
 5. **The specs folder stays `specs/`.**
+
+## 8. Decisions for the ticket step (owner, 2026-11-23)
+
+The spec was silent on these four points. The owner chose the defaults below when M2-5 was built.
+
+1. **Paths.** The scan gives paths relative to the app root (`routes/login.ts`). The ticket step adds `app/`, so the fingerprint, the title and the link use repo-root paths: `app/routes/login.ts` + `34` + `CWE-89`. The `--only` filter uses the scan's path.
+2. **Link commit.** Links point to the full SHA of the git `HEAD` of the checkout at run time.
+3. **Secret findings.** A finding is a secret finding if any of its rule IDs contains `secrets`, or its CWE is 798, 259, 321 or 312. It gets no line hash, and its source line is not read.
+4. **Repo, token, labels.** The repo comes from the `origin` remote (or `GITHUB_REPOSITORY`). The token is `GITHUB_TOKEN`. Labels are `finding` and `severity:high`, `severity:medium` or `severity:low` (SARIF error, warning, note or none). A missing label is created when the first ticket is.
+
+Also: existing tickets are found by listing all issues with the `finding` label and reading the fingerprint marker, not by the search API, because the search index lags and could let a duplicate through. `make ticket` creates only the slice's finding (`SCAN_EXPECT_FILE` and `SCAN_EXPECT_CWE`), not all 15 locations.

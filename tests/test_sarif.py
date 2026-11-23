@@ -113,11 +113,18 @@ def test_leading_dot_slash_is_removed_from_paths():
     assert sarif.read_findings(d)[0].file == "routes/login.ts"
 
 
-@pytest.mark.parametrize("uri", ["/src/routes/login.ts", "app/routes/login.ts", "file:///src/x.ts", "../x.ts"])
+@pytest.mark.parametrize("uri", ["/src/routes/login.ts", "file:///src/x.ts", "../x.ts", "a/../../x.ts"])
 def test_paths_not_relative_to_the_app_root_are_rejected(uri):
     d = doc([rule("r1")], [result("r1", uri=uri)])
     with pytest.raises(SarifError, match="relative to the app root"):
         sarif.read_findings(d)
+
+
+@pytest.mark.parametrize("uri", ["app/routes/login.ts", "app/app/x.ts"])
+def test_a_path_may_start_with_an_app_folder(uri):
+    # A real repo can have an app/ folder. Only absolute paths, URLs and .. paths are rejected.
+    d = doc([rule("r1")], [result("r1", uri=uri)])
+    assert sarif.read_findings(d)[0].file == uri
 
 
 def test_result_without_location_is_rejected():
