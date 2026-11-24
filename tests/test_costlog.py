@@ -24,7 +24,8 @@ def test_build_entry_has_the_agreed_fields_and_nothing_else():
     assert e == {"timestamp": "2026-11-24T12:00:00Z", "issue": 3, "model": "anthropic/claude-sonnet-5-5",
                  "input_tokens": 20026, "output_tokens": 385, "cache_read_tokens": 9750,
                  "cache_write_tokens": 10039, "cost_usd": 0.0304, "budget_cap_hit": False,
-                 "iteration_cap_hit": False, "outcome": "pr_opened", "seconds": 4.3, "final": True}
+                 "iteration_cap_hit": False, "outcome": "pr_opened", "run_outcome": "pr_opened",
+                 "isolation_after": "not_checked", "seconds": 4.3, "final": True}
 
 
 def test_build_entry_without_metrics_has_unknown_cost():
@@ -143,3 +144,48 @@ def test_a_negative_or_text_cost_is_rejected_as_missing(tmp_path):
 def test_record_needs_an_outcome():
     with pytest.raises(SystemExit):
         costlog.main(["record", "--log", "x", "--issue", "3"])
+
+
+# ---- the isolation result after the run (a real failure must not hide behind the run's outcome) ----
+
+def test_the_isolation_result_is_a_field_of_the_entry():
+    e = costlog.build_entry(issue=3, metrics=METRICS, outcome="pr_opened", now=NOW, isolation="passed")
+    assert e["isolation_after"] == "passed" and e["outcome"] == "pr_opened" and e["run_outcome"] == "pr_opened"
+
+
+def test_a_failed_isolation_check_becomes_the_outcome_and_keeps_the_run_outcome():
+    e = costlog.build_entry(issue=3, metrics=METRICS, outcome="sanity_failed", now=NOW,
+                            isolation="FAILED: client: holds GITHUB_TOKEN")
+    assert e["outcome"] == "isolation_failed" and e["run_outcome"] == "sanity_failed"
+    assert e["isolation_after"] == "FAILED: client: holds GITHUB_TOKEN"
+
+
+def test_a_long_isolation_message_is_cut():
+    e = costlog.build_entry(issue=3, metrics=METRICS, outcome="x", now=NOW, isolation="FAILED: " + "a" * 500)
+    assert len(e["isolation_after"]) <= costlog.MAX_ISOLATION_TEXT
+
+
+def test_report_shows_the_isolation_result():
+    e = costlog.build_entry(issue=3, metrics=METRICS, outcome="pr_opened", now=NOW, isolation="passed")
+    assert "isolation after the run: passed" in costlog.report(e, 0.03, 1, 0)
+
+
+def test_record_writes_the_isolation_result_and_exits_zero_when_it_passed(tmp_path, capsys):
+    write_metrics(tmp_path)
+    code, log = run(tmp_path, "--isolation", "passed")
+    assert code == 0 and json.loads(log.read_text())["isolation_after"] == "passed"
+
+
+def test_record_exits_nonzero_and_says_so_when_isolation_failed(tmp_path, capsys):
+    write_metrics(tmp_path)
+    code, log = run(tmp_path, "--isolation", "FAILED: sandbox: holds AWS_X")
+    entry = json.loads(log.read_text())
+    assert code == costlog.EXIT_ISOLATION
+    assert entry["outcome"] == "isolation_failed" and entry["run_outcome"] == "pr_opened"
+    assert "ISOLATION FAILED" in capsys.readouterr().err
+
+
+def test_a_failed_isolation_check_wins_over_a_cost_problem(tmp_path):
+    write_metrics(tmp_path, cost_usd=0.0)
+    code, _ = run(tmp_path, "--isolation", "FAILED: x")
+    assert code == costlog.EXIT_ISOLATION

@@ -5,7 +5,7 @@ FILTER      := label=$(LABEL_KEY)=$(LABEL_VALUE)
 # Images pulled from a registry carry no label. They are listed here and removed by name.
 PULLED      := spikes/pulled-images.txt
 
-.PHONY: help list clean-all diagrams build-app up down check-up test-up scan test test-scan scan-secrets ticket exploit test-network-isolation build-fixer-client fix fix-dry-run
+.PHONY: help list clean-all diagrams build-app up down check-up test-up scan test test-scan scan-secrets ticket exploit test-network-isolation build-fixer-client fix fix-dry-run test-isolation
 
 help:
 	@echo "make list       Show everything labelled $(LABEL_KEY)=$(LABEL_VALUE)"
@@ -23,6 +23,7 @@ help:
 	@echo "make build-fixer-client  Build the client image for the fix step (pinned base, locked packages)"
 	@echo "make fix-dry-run  Step fix without the model: task, sandbox, copy, install, baseline specs, isolation check"
 	@echo "make fix        Step fix (PAID, caps \$$1 and 40 steps): OpenHands fixes issue 3, a script opens the pull request"
+	@echo "make test-isolation  Test the isolation check of the fix step (starts small containers, some built to fail)"
 	@echo "make test       Run the Python tests with coverage (at least 90 percent)"
 	@echo "make scan-secrets  Secrets scan of the tracked files (gitleaks, path allowlist in .gitleaks.toml)"
 	@echo "make test-scan  Test the failure cases of the scan step (runs Semgrep three times)"
@@ -134,3 +135,7 @@ fix:
 # No model call and no pull request. Needs only GITHUB_TOKEN.
 fix-dry-run:
 	@scripts/fix.sh --dry-run
+
+# The isolation check that scripts/fix.sh runs on the sandbox and client containers.
+test-isolation:
+	@tests/isolation-test.sh

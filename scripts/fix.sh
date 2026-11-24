@@ -45,11 +45,7 @@ OUTCOME=error; RC=1; MODEL_CALLED=0; RECORDED=0; WATCHDOG=
 say() { echo "fix: $*"; }
 die() { echo "fix: FAILED: $*" >&2; RC=1; exit 1; }
 
-env_value() {  # one variable from the environment, else from .env. Printed only into a variable.
-  eval "v=\${$1:-}"
-  if [ -z "$v" ] && [ -f .env ]; then v=$(sed -n "s/^$1=//p" .env | head -n 1 | tr -d "\"'\r"); fi
-  printf '%s' "$v"
-}
+. scripts/isolation.sh   # env_value and isolation_check (tested by tests/isolation-test.sh)
 
 clear_containers() {
   docker rm -f -v "$CLIENT" "$SANDBOX" >/dev/null 2>&1
@@ -70,7 +66,7 @@ record_cost() {  # runs once, on every way out, if the model was called or the c
   docker run --rm --label "$LABEL" -e PYTHONDONTWRITEBYTECODE=1 \
     -v "$PWD/agents:/repo/agents:ro" -v "$PWD/out:/repo/out" -w /repo "$PY_IMAGE" \
     python -m agents.fixer_agent.costlog record --log "$LOG" --issue "$ISSUE" --outcome "$OUTCOME" \
-    --metrics "$FIX_DIR/metrics.json" || { [ "$RC" = 0 ] && RC=3; }
+    --metrics "$FIX_DIR/metrics.json" --isolation "$ISOLATION" || { [ "$RC" = 0 ] && RC=3; }
 }
 
 on_exit() { cleanup; record_cost; exit "$RC"; }
@@ -78,30 +74,22 @@ on_term() { OUTCOME=timeout; RC=1; echo "fix: stopped: wall-clock limit of $WALL
 trap on_exit EXIT
 trap on_term TERM INT
 
-# Fails (and so stops the run) if the container holds a credential, a mount or a published port.
-assert_isolated() {  # name, then the variable names this container may hold
-  name=$1; shift
-  bad=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$name" | cut -d= -f1 \
-        | grep -i -E 'AWS|GITHUB|TOKEN|SECRET|KEY|PASSWORD|ANTHROPIC|CREDENTIAL' || true)
-  for ok in "$@"; do bad=$(printf '%s\n' "$bad" | grep -v -x "$ok" || true); done
-  [ -z "$(printf '%s' "$bad" | tr -d '[:space:]')" ] || die "container $name holds credential-like variables: $(echo $bad)"
-  docker inspect "$name" > out/.inspect.tmp
-  for var in GITHUB_TOKEN GITHUB_FIX_TOKEN ANTHROPIC_API_KEY; do
-    val=$(env_value "$var")
-    if [ -n "$val" ] && printf '%s\n' "$val" | grep -qF -f - out/.inspect.tmp; then
-      if [ "$name" = "$SANDBOX" ] || [ "$var" != ANTHROPIC_API_KEY ]; then
-        rm -f out/.inspect.tmp; die "the value of $var appears in the configuration of $name"
-      fi
-    fi
-  done
-  rm -f out/.inspect.tmp
-  [ "$(docker inspect -f '{{len .Mounts}}' "$name")" = 0 ] || die "container $name has mounts"
-  [ "$(docker inspect -f '{{.HostConfig.Privileged}}' "$name")" = false ] || die "container $name is privileged"
-  [ "$(docker inspect -f '{{index .Config.Labels "project"}}' "$name")" = governed-remediation ] || die "container $name has no project label"
-  if [ "$name" = "$SANDBOX" ]; then
-    ports=$(docker inspect -f '{{range $p, $b := .NetworkSettings.Ports}}{{if $b}}{{$p}} {{end}}{{end}}' "$name")
-    [ -z "$ports" ] || die "the sandbox publishes ports: $ports"
+# Before the run: a problem stops everything.
+assert_isolated() {  # name, then the exact variable names this container may hold
+  reason=$(isolation_check "$@") || die "isolation: $reason"
+}
+
+# After the run: the result goes into ISOLATION, and from there into the cost log (--isolation), so a real
+# failure shows up as its own outcome and cannot pass for the run's outcome. Only GPG_KEY (set by the python base
+# image: Python's public release-signing key) and the Anthropic key are allowed, and only on the client.
+ISOLATION=not_checked
+check_isolation_after() {
+  if ! docker inspect "$SANDBOX" >/dev/null 2>&1 || ! docker inspect "$CLIENT" >/dev/null 2>&1; then
+    ISOLATION="not_checked (a container was already gone)"; return 0
   fi
+  if ! r=$(isolation_check "$SANDBOX"); then ISOLATION="FAILED: sandbox: $r"; return 1; fi
+  if ! r=$(isolation_check "$CLIENT" ANTHROPIC_API_KEY GPG_KEY); then ISOLATION="FAILED: client: $r"; return 1; fi
+  ISOLATION=passed
 }
 
 # ---- before anything is spent or started ----
@@ -148,12 +136,28 @@ say "copying a throwaway app/ into the sandbox (no frontend, no node_modules)"
 COPYFILE_DISABLE=1 tar --no-xattrs -C app --exclude=./frontend --exclude=node_modules -cf - . \
   | docker exec -i "$SANDBOX" sh -c 'mkdir -p /workspace/app && tar -x -C /workspace/app' || die "copy failed"
 say "installing dependencies in the sandbox (about 3 minutes, no agent involved)"
-docker exec "$SANDBOX" sh -c 'cd /workspace/app && npm install --ignore-scripts --no-audit --no-fund --loglevel=error >/dev/null 2>&1 && npm rebuild sqlite3 >/dev/null 2>&1' \
+docker exec "$SANDBOX" sh -c 'cd /workspace/app && npm install --ignore-scripts --no-audit --no-fund --loglevel=error >/dev/null 2>&1' \
   || die "npm install failed in the sandbox"
+# The sandbox's npm blocks install scripts, and "npm rebuild" then does nothing and still says it worked. So the
+# one native module the tests need is built by running its own install script directly.
+say "building the sqlite3 native module"
+docker exec "$SANDBOX" sh -c 'cd /workspace/app/node_modules/sqlite3 && npm run install 2>&1 | tail -3' \
+  || die "building sqlite3 failed in the sandbox"
 say "baseline: Juice Shop's own specs on the untouched copy"
 base_out=$(docker exec "$SANDBOX" sh -c 'cd /workspace/app && npx mocha -r tsx test/server/insecuritySpec.ts test/server/currentUserSpec.ts 2>&1'); base_rc=$?
 printf '%s\n' "$base_out" | grep -E "passing|failing"
 [ "$base_rc" = 0 ] || die "the baseline specs do not pass on the untouched copy"
+# The check that was missing before: load the app's own database layer (models/index, sequelize, sqlite3) and
+# run one query. The regression test needs exactly this, and the two specs above do not touch the database.
+say "baseline: the app's database layer loads and answers a query"
+docker exec -i "$SANDBOX" sh -c 'cat > /tmp/dbcheck.ts' <<'TS'
+import * as models from '/workspace/app/models/index'
+models.sequelize.query('SELECT 1 AS x', { plain: true })
+  .then((r: any) => { if (r?.x !== 1) { console.error('unexpected answer'); process.exit(1) } console.log('database layer ok (models/index, sequelize, sqlite3)'); process.exit(0) })
+  .catch((e: Error) => { console.error('database layer failed: ' + e.message.split('\n')[0]); process.exit(1) })
+TS
+docker exec "$SANDBOX" sh -c 'cd /workspace/app && npx tsx /tmp/dbcheck.ts 2>&1 | tail -3; rc=$?; rm -f /tmp/dbcheck.ts data/juiceshop.sqlite; exit $rc' \
+  | tee /dev/stderr | grep -q "database layer ok" || die "the app's database layer does not work in the sandbox"
 
 if [ "$DRY" = 1 ]; then
   assert_isolated "$SANDBOX"
@@ -172,9 +176,11 @@ OUTCOME=$(sed -n 's/.*"outcome": *"\([a-z_]*\)".*/\1/p' "$FIX_DIR/result.json" 2
 [ -n "$OUTCOME" ] || OUTCOME=error
 
 # ---- 4. check ----
-assert_isolated "$SANDBOX"
-assert_isolated "$CLIENT" ANTHROPIC_API_KEY
-say "isolation (after): the sandbox still holds no credential, no mount and no port. The client held only the Anthropic key"
+if check_isolation_after; then
+  say "isolation (after): $ISOLATION. The sandbox holds no credential, mount or port. The client held only the Anthropic key"
+else
+  die "isolation FAILED after the run: ${ISOLATION#FAILED: }"
+fi
 
 [ "$run_rc" = 0 ] && [ "$OUTCOME" = ready ] || die "the run did not produce a fix that passes the sanity check (outcome: $OUTCOME)"
 
