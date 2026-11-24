@@ -5,7 +5,7 @@ FILTER      := label=$(LABEL_KEY)=$(LABEL_VALUE)
 # Images pulled from a registry carry no label. They are listed here and removed by name.
 PULLED      := spikes/pulled-images.txt
 
-.PHONY: help list clean-all diagrams build-app up down check-up test-up scan test test-scan scan-secrets ticket exploit test-network-isolation build-fixer-client fix fix-dry-run check-banned-terms test-banned-terms test-isolation
+.PHONY: help list clean-all diagrams build-app up down check-up test-up scan test test-scan scan-secrets ticket exploit test-network-isolation build-fixer-client fix fix-dry-run check-banned-terms test-banned-terms test-isolation fix-publish-saved
 
 help:
 	@echo "make list       Show everything labelled $(LABEL_KEY)=$(LABEL_VALUE)"
@@ -25,6 +25,7 @@ help:
 	@echo "make fix        Step fix (PAID, caps \$$1 and 40 steps): OpenHands fixes issue 3, a script opens the pull request"
 	@echo "make check-banned-terms  Banned-terms search on tracked files, app/ excluded (terms in .banned-terms.local)"
 	@echo "make test-banned-terms  Test the banned-terms check (uses temporary terms files)"
+	@echo "make fix-publish-saved  Publish the run saved in out/fix (no model call). Checks the saved run first"
 	@echo "make test-isolation  Test the isolation check of the fix step (starts small containers, some built to fail)"
 	@echo "make test       Run the Python tests with coverage (at least 90 percent)"
 	@echo "make scan-secrets  Secrets scan of the tracked files (gitleaks, path allowlist in .gitleaks.toml)"
@@ -149,3 +150,7 @@ test-banned-terms:
 # The isolation check that scripts/fix.sh runs on the sandbox and client containers.
 test-isolation:
 	@tests/isolation-test.sh
+
+# Publishes a run already saved in out/fix, after checking from its recorded results that it was clean. No model call.
+fix-publish-saved:
+	@scripts/fix.sh --publish-only

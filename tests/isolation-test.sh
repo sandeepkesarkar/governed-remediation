@@ -73,10 +73,11 @@ with_mounts expect_fail "allowed mounts do not excuse a credential variable" $G
 # ---- saving the sandbox output ----
 rm -rf out/.isotest-salvage; mkdir -p out/.isotest-salvage
 start --label $L
-docker exec "$N" sh -c 'mkdir -p /workspace/app/routes /workspace/app/node_modules/x && echo fixed > /workspace/app/routes/login.ts && echo big > /workspace/app/node_modules/x/y.js'
+docker exec "$N" sh -c 'mkdir -p /workspace/app/routes /workspace/app/node_modules/x && echo fixed > /workspace/app/routes/login.ts && echo big > /workspace/app/node_modules/x/y.js && mkdir -p /workspace/app/.git/hooks && echo cfg > /workspace/app/.git/config'
 if salvage_output "$N" out/.isotest-salvage/tree.tar; then check ok "the sandbox output is saved"; else check bad "the sandbox output is saved"; fi
 tar -tf out/.isotest-salvage/tree.tar 2>/dev/null | grep -q "routes/login.ts" && check ok "the saved tar holds the work" || check bad "the saved tar holds the work"
 tar -tf out/.isotest-salvage/tree.tar 2>/dev/null | grep -q "node_modules" && check bad "node_modules is left out" || check ok "node_modules is left out"
+tar -tf out/.isotest-salvage/tree.tar 2>/dev/null | grep -q "\.git" && check bad ".git is left out of the saved tar" || check ok ".git is left out of the saved tar"
 cleanup
 rm -f out/.isotest-salvage/tree.tar
 if salvage_output "$N" out/.isotest-salvage/tree.tar; then check bad "a missing sandbox returns failure and writes nothing"; else
@@ -88,7 +89,7 @@ if salvage_output "$N" out/.isotest-salvage/tree.tar; then check bad "a missing 
 F=scripts/fix.sh
 save_line=$(grep -n '^save_output$' $F | head -1 | cut -d: -f1)
 check_line=$(grep -n '^if check_isolation_after' $F | head -1 | cut -d: -f1)
-publish_line=$(grep -n 'agents.fixer_agent.publish' $F | head -1 | cut -d: -f1)
+publish_line=$(grep -n '^publish_saved ||' $F | head -1 | cut -d: -f1)   # the call in the live-run flow, not the definition
 [ -n "$save_line" ] && [ -n "$check_line" ] && [ "$save_line" -lt "$check_line" ] && check ok "the output is saved before the isolation verdict" || check bad "the output is saved before the isolation verdict"
 [ -n "$publish_line" ] && [ "$check_line" -lt "$publish_line" ] && check ok "the isolation verdict comes before publishing" || check bad "the isolation verdict comes before publishing"
 body=$(sed -n '/^cleanup() {/,/^}/p' $F)
@@ -96,5 +97,11 @@ s1=$(printf '%s\n' "$body" | grep -n 'save_output' | head -1 | cut -d: -f1)
 s2=$(printf '%s\n' "$body" | grep -n 'clear_containers' | head -1 | cut -d: -f1)
 [ -n "$s1" ] && [ -n "$s2" ] && [ "$s1" -lt "$s2" ] && check ok "cleanup saves the output before it removes the sandbox (every exit path)" || check bad "cleanup saves the output before it removes the sandbox (every exit path)"
 grep -n 'rm -rf "$FIX_DIR"' $F | grep -q 'tree.tar' && check ok "a saved tar is moved aside, not deleted, by the next run" || check bad "a saved tar is moved aside, not deleted, by the next run"
+# publish-only mode: the saved run is verified before anything is published, and the model is never called
+po=$(sed -n '/^if \[ "$PUBONLY" = 1 \]; then$/,/^fi$/p' $F)
+v1=$(printf '%s\n' "$po" | grep -n 'agents.fixer_agent.saved_run' | head -1 | cut -d: -f1)
+v2=$(printf '%s\n' "$po" | grep -n 'publish_saved' | head -1 | cut -d: -f1)
+[ -n "$v1" ] && [ -n "$v2" ] && [ "$v1" -lt "$v2" ] && check ok "publish-only checks the saved run before it publishes" || check bad "publish-only checks the saved run before it publishes"
+printf '%s\n' "$po" | grep -q 'fix_run\|MODEL_CALLED=1\|ANTHROPIC' && check bad "publish-only never calls the model" || check ok "publish-only never calls the model"
 grep -n 'sleep "$WALL"' $F | grep -q 'SANDBOX' && check bad "the watchdog does not remove the sandbox" || check ok "the watchdog does not remove the sandbox"
 exit $fail
