@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from agents.ticket_agent import sarif
-from agents.ticket_agent.github import GitHubClient, GitHubError
+from agents.common.github import GitHubClient, GitHubError
 
 TOKEN_VARIABLE = "GITHUB_TOKEN"   # the name in .env.example
 FINDING_LABEL = "finding"
@@ -100,6 +100,9 @@ def _markers(issue):
         return None
     h = _LINEHASH.search(body)
     return m.group(1), int(m.group(2)), m.group(3), (h.group(1) if h else None)
+
+
+read_markers = _markers  # public name for other steps (the fix step reads the ticket the same way)
 
 
 def make_line_reader(app_dir):
