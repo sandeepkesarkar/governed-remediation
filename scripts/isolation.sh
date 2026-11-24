@@ -13,7 +13,10 @@ env_value() {
 #     PASSWORD, ANTHROPIC, CREDENTIAL), unless that exact name is in the allowed list
 #   - has the value of GITHUB_TOKEN, GITHUB_FIX_TOKEN or ANTHROPIC_API_KEY anywhere in its configuration
 #     (a name in the allowed list is exempt from the value check too)
-#   - has a mount, is privileged, publishes a port, or lacks the project label
+#   - has a mount that is not in ISOLATION_MOUNTS, is privileged, publishes a port, or lacks the project label
+# ISOLATION_MOUNTS is a space-separated list of DESTINATION:MODE pairs, for example "/repo/agents:ro /out:rw",
+# set for one call (ISOLATION_MOUNTS="..." isolation_check NAME). A mount passes only if its destination AND its
+# mode both match a pair exactly. The list is a ceiling, not a requirement. With no list, any mount fails.
 # Prints nothing and returns 0 if it is fine. Names are matched whole, so an allowance is for one name only.
 # It prints variable names, never values.
 isolation_check() {
@@ -34,7 +37,12 @@ isolation_check() {
     fi
   done
   rm -f "$_tmp"
-  [ "$(docker inspect -f '{{len .Mounts}}' "$_name")" = 0 ] || { echo "$_name has mounts"; return 1; }
+  for _m in $(docker inspect -f '{{range .Mounts}}{{.Destination}}:{{if .RW}}rw{{else}}ro{{end}}{{println}}{{end}}' "$_name"); do
+    case " ${ISOLATION_MOUNTS:-} " in
+      *" $_m "*) ;;
+      *) echo "$_name has an unexpected mount ($_m)"; return 1;;
+    esac
+  done
   [ "$(docker inspect -f '{{.HostConfig.Privileged}}' "$_name")" = false ] || { echo "$_name is privileged"; return 1; }
   [ "$(docker inspect -f '{{index .Config.Labels "project"}}' "$_name")" = governed-remediation ] \
     || { echo "$_name has no project label"; return 1; }
