@@ -5,7 +5,7 @@ FILTER      := label=$(LABEL_KEY)=$(LABEL_VALUE)
 # Images pulled from a registry carry no label. They are listed here and removed by name.
 PULLED      := spikes/pulled-images.txt
 
-.PHONY: help list clean-all diagrams build-app up down check-up test-up scan test test-scan scan-secrets ticket exploit test-network-isolation
+.PHONY: help list clean-all diagrams build-app up down check-up test-up scan test test-scan scan-secrets ticket exploit test-network-isolation build-fixer-client fix fix-dry-run
 
 help:
 	@echo "make list       Show everything labelled $(LABEL_KEY)=$(LABEL_VALUE)"
@@ -20,6 +20,9 @@ help:
 	@echo "make scan       Step scan: Semgrep on app/, SARIF to out/"
 	@echo "make ticket     Step ticket: one GitHub issue for the slice's finding (needs GITHUB_TOKEN, run make scan first)"
 	@echo "make exploit    Step exploit: run the login SQLi exploit, container-to-container (run make up first)"
+	@echo "make build-fixer-client  Build the client image for the fix step (pinned base, locked packages)"
+	@echo "make fix-dry-run  Step fix without the model: task, sandbox, copy, install, baseline specs, isolation check"
+	@echo "make fix        Step fix (PAID, caps \$$1 and 40 steps): OpenHands fixes issue 3, a script opens the pull request"
 	@echo "make test       Run the Python tests with coverage (at least 90 percent)"
 	@echo "make scan-secrets  Secrets scan of the tracked files (gitleaks, path allowlist in .gitleaks.toml)"
 	@echo "make test-scan  Test the failure cases of the scan step (runs Semgrep three times)"
@@ -117,3 +120,17 @@ test-network-isolation:
 
 scan-secrets:
 	@scripts/scan-secrets.sh
+
+# Step "fix" (specs/M2-thin-slice.md, plan M2-7). The client image holds the OpenHands SDK. Every package is
+# pinned in agents/fixer_agent/client/requirements.lock. The image carries the project label.
+FIXER_CLIENT := governed-remediation/fixer-client:1.63.1
+build-fixer-client:
+	docker build --label $(LABEL_KEY)=$(LABEL_VALUE) -t $(FIXER_CLIENT) agents/fixer_agent/client
+
+# PAID. Needs ANTHROPIC_API_KEY, GITHUB_TOKEN and GITHUB_FIX_TOKEN in .env. Opens one pull request. Never merges it.
+fix:
+	@scripts/fix.sh
+
+# No model call and no pull request. Needs only GITHUB_TOKEN.
+fix-dry-run:
+	@scripts/fix.sh --dry-run

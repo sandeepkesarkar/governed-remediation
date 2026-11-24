@@ -71,6 +71,13 @@ Every image, tool and library we adopt is pinned and recorded here. Add a row wh
 | `ghcr.io/mermaid-js/mermaid-cli/mermaid-cli` | Image | `11.12.0`, index digest `sha256:bad64c9d9ad917c8dfbe9d9e9c162b96f6615ff019b37058638d16eb27ce7783`. Native `linux/arm64`, Chromium inside. MIT. Run by `make diagrams` with the project label, no published ports, and only `docs/images` mounted. | `Makefile` (`diagrams`), `docs/images/src/` | M0-10 |
 | `node` (build stage of the Juice Shop Dockerfile) | Image | `24`, index digest `sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496`. Pinned by `make build-app` with a named build context. The Dockerfile in `app/` is unchanged. | `Makefile` (`build-app`) | M2-2 |
 | `gcr.io/distroless/nodejs24-debian13` (final stage) | Image | Index digest `sha256:24bc0fe0225c7518f202a822587dad74fe143b96326b81fe5cc08c1df8bed03e` (the `latest` tag on 2026-11-18). Pinned by `make build-app` with a named build context. | `Makefile` (`build-app`) | M2-2 |
+| `ghcr.io/openhands/agent-server` | Image | `1.63.1-python`, index digest `sha256:506c2e243dcc3f5092ad0909c5dff9fef621298faed9042b5d4b0375fac837a5`. Native `linux/arm64`, 5.5 GB. The OpenHands sandbox. Run with the project label, no mounts, no published ports. | `spikes/S2a/run.sh` | M1-4 (S2a) |
+| `python` (slim) | Image | `3.13.18-slim`, digest `sha256:7249d5587b78209a006dc4a3b5340678f84ea729239193aa559962cd8c1fce50`. Client container for the OpenHands SDK. | `spikes/S2a/run.sh` | M1-4 (S2a) |
+| `openhands-sdk`, `openhands-tools` | Python packages | `1.63.1` both (must match each other). Installed with `pip --target` inside the slim container. | `spikes/S2a/client/run.py` | M1-4 (S2a) |
+| OpenHands client image (built here) | Image | `governed-remediation/fixer-client:1.63.1`, built by `make build-fixer-client` from `agents/fixer_agent/client/Dockerfile`: the pinned `python:3.13.18-slim` above plus `openhands-sdk` and `openhands-tools` `1.63.1`, with all 180 packages pinned in `agents/fixer_agent/client/requirements.lock`. Carries the project label. Holds the Anthropic key at run time, never a GitHub token. | `scripts/fix.sh` | M2-7 |
+| Model for the fixer | Model | `anthropic/claude-sonnet-5-5` (Claude Sonnet 5.5), the same as spike S2a, pinned in `agents/fixer_agent/fix_run.py`. Price table: LiteLLM's, $2 per million input tokens, $10 per million output tokens. LiteLLM fetches a newer table at run time if it can, so a cost figure is only as fixed as that table. A reported cost of exactly zero stops the run's accounting loudly (`costlog.py`). | `agents/fixer_agent/fix_run.py` | M2-7 |
+| Fixer caps | Setting | `max_budget_per_run` $1.00 and `max_iteration_per_run` 40 per conversation, enforced by OpenHands. Sub-agents off (`enable_sub_agents=False`, written out in `fix_run.py`). A wall-clock limit of 900 s for the whole run (`FIX_WALL_SECONDS`) and 840 s inside the client. The caps can be lowered through the environment, never raised. | `agents/fixer_agent/fix_run.py`, `scripts/fix.sh` | M2-7 |
+| Model for OpenHands | Model | `claude-sonnet-5-5` (LiteLLM id `anthropic/claude-sonnet-5-5`). Spike choice, owner to confirm. | `spikes/S2a/run.sh` | M1-4 (S2a) |
 
 ## Locally built images
 
@@ -116,3 +123,21 @@ The Semgrep image (`semgrep/semgrep:1.185.0`) is now also used by `make scan`, a
 The container joins `exploit-net` (`compose.yaml`), a second network that `juice-shop-prod` also joins, alongside its existing `project-net`. `exploit-net` is marked `internal: true`: a container with only that network has no gateway, no DNS and no internet (proved live by `tests/network-isolation-test.sh`). `project-net` itself is unchanged from M2-3, including the loopback-published port that `make up` and `scripts/check-loopback.sh` depend on; Docker cannot publish a host port on an `internal: true` network at all, which is why `exploit-net` is a second network rather than a change to `project-net`.
 
 The script refuses to target anything but the app's own compose service name (`juice-shop-prod`), checked before any request is sent. `agents/` is mounted read-only, `out/` read-write (this step writes its result file; the ticket step only reads).
+
+## Tokens
+
+| Variable | Used by | Scope | Where it goes |
+|---|---|---|---|
+| `GITHUB_TOKEN` | Ticket step. The fix step reads one issue with it. | Fine-grained, this repository only: Issues read and write, Metadata read. 30-day expiry (M0-9). | A one-off python container. |
+| `GITHUB_FIX_TOKEN` | The publish script of the fix step only | Fine-grained, this repository only: Contents read and write, Pull requests read and write, Metadata read. 30-day expiry. Created for M2-7. | A one-off python container that runs `agents.fixer_agent.publish`. **Never** the OpenHands sandbox or the client container. `scripts/fix.sh` inspects both containers and stops if any credential variable, or the value of any token, is there. |
+| `ANTHROPIC_API_KEY` | The fix client container | A key with the owner's spending limit (M0-6). | The client container. The client sends it to the sandbox inside the conversation request, so the agent can reach it in memory. See `docs/spikes/S2a-fixer-openhands.md`. |
+
+All three live in the local `.env` (git ignores it). `.env.example` lists the names only.
+
+### Creating `GITHUB_FIX_TOKEN`
+
+1. GitHub, Settings, Developer settings, Personal access tokens, Fine-grained tokens, Generate new token.
+2. Resource owner: your account. Repository access: **Only select repositories**, and pick only this repository.
+3. Expiration: 30 days.
+4. Repository permissions: Contents **Read and write**, Pull requests **Read and write**. Metadata is added as read only. Nothing else.
+5. Copy the token once. Add a line `GITHUB_FIX_TOKEN=<the token>` to `.env`. Do not paste it into a chat, a terminal history or a file that is tracked.
