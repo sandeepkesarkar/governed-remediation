@@ -15,11 +15,18 @@
 #               with GITHUB_FIX_TOKEN. The agent never sees that token. Nothing is merged.
 #   6. cost     One line is appended to out/cost-log.jsonl and the run and running totals are printed.
 #
-# --dry-run does steps 1, 2 and 4 on the pristine copy and the baseline specs. It makes no model call, needs no
+# --dry-run does steps 1 and 2, the baseline specs and the database baseline, and then starts the client container (with no key)
+# and runs the same save-output and after-run isolation steps as a live run. It makes no model call, needs no
 # Anthropic key and no fix token, and writes no cost line. A run that stops before the model is called writes none either.
 #
 # The whole run is limited to FIX_WALL_SECONDS (default 900). The cost cap and the iteration cap are enforced by
 # OpenHands inside the run. The wall clock is a separate backstop in case cost reporting stalls.
+#
+# STANDING RULE: nothing that runs after the model has been called may be able to cause the loss of the sandbox's
+# output. The output (the working copy, as a tar file) is saved to out/fix/tree.tar right after the run, BEFORE the
+# isolation verdict, whatever the outcome. The cleanup that runs on every way out of this script saves it too, before
+# it removes the sandbox, as a backstop. The isolation check after the run may only block publishing.
+# tests/isolation-test.sh checks the order of these steps in this file.
 #
 # Tokens come from the environment or, if absent, from .env (one line each). Values are never printed and never
 # appear on a command line: they reach a container through the environment, by name only.
@@ -40,12 +47,13 @@ DRY=0
 ISSUE=${1:-3}
 EXPECT="app/$EXPECT_FILE_DEFAULT:$EXPECT_CWE_DEFAULT"
 
-OUTCOME=error; RC=1; MODEL_CALLED=0; RECORDED=0; WATCHDOG=
+OUTCOME=error; RC=1; MODEL_CALLED=0; RECORDED=0; SAVED=0; WATCHDOG=
 
 say() { echo "fix: $*"; }
 die() { echo "fix: FAILED: $*" >&2; RC=1; exit 1; }
 
 . scripts/isolation.sh   # env_value and isolation_check (tested by tests/isolation-test.sh)
+. scripts/salvage.sh     # salvage_output (tested the same way)
 
 clear_containers() {
   docker rm -f -v "$CLIENT" "$SANDBOX" >/dev/null 2>&1
@@ -53,8 +61,21 @@ clear_containers() {
   true
 }
 
+# Saves the sandbox's output once the model has been called. Never fails the script and never stops it.
+save_output() {
+  [ "$MODEL_CALLED" = 1 ] || return 0
+  [ "$SAVED" = 1 ] && return 0
+  if salvage_output "$SANDBOX" "$FIX_DIR/tree.tar"; then
+    SAVED=1; say "saved the sandbox output to $FIX_DIR/tree.tar"
+  else
+    echo "fix: WARNING: could not save the sandbox output (the sandbox may already be gone)" >&2
+  fi
+  return 0
+}
+
 cleanup() {
   [ -n "$WATCHDOG" ] && kill "$WATCHDOG" 2>/dev/null
+  save_output
   clear_containers
 }
 
@@ -88,7 +109,10 @@ check_isolation_after() {
     ISOLATION="not_checked (a container was already gone)"; return 0
   fi
   if ! r=$(isolation_check "$SANDBOX"); then ISOLATION="FAILED: sandbox: $r"; return 1; fi
-  if ! r=$(isolation_check "$CLIENT" ANTHROPIC_API_KEY GPG_KEY); then ISOLATION="FAILED: client: $r"; return 1; fi
+  # The client has exactly two mounts: our code read-only and the output folder read-write (see the docker run below).
+  if ! r=$(ISOLATION_MOUNTS="/repo/agents:ro /out:rw" isolation_check "$CLIENT" ANTHROPIC_API_KEY GPG_KEY); then
+    ISOLATION="FAILED: client: $r"; return 1
+  fi
   ISOLATION=passed
 }
 
@@ -107,11 +131,14 @@ git diff --quiet origin/main -- app/ || die "app/ differs from origin/main. The 
 docker image inspect "$CLIENT_IMAGE" >/dev/null 2>&1 || die "the client image is missing. Run: make build-fixer-client"
 case "$ISSUE" in ''|*[!0-9]*) die "the issue must be a number";; esac
 
-( sleep "$WALL"; kill -TERM $$ 2>/dev/null; docker rm -f "$CLIENT" "$SANDBOX" >/dev/null 2>&1 ) &
+# The watchdog stops the script and frees it from a waiting client. It leaves the sandbox alone, so cleanup can save its output.
+( sleep "$WALL"; kill -TERM $$ 2>/dev/null; sleep 3; docker rm -f "$CLIENT" >/dev/null 2>&1 ) &
 WATCHDOG=$!
 
 # ---- 1. task ----
-rm -rf "$FIX_DIR"; mkdir -p "$FIX_DIR"
+# A saved sandbox output from an earlier run is never deleted. It is moved aside, with the time in its name.
+if [ -s "$FIX_DIR/tree.tar" ]; then mv "$FIX_DIR" "out/fix-saved-$(date -u +%Y%m%dT%H%M%SZ)"; else rm -rf "$FIX_DIR"; fi
+mkdir -p "$FIX_DIR"
 say "reading issue #$ISSUE from $repo"
 GITHUB_TOKEN=$(env_value GITHUB_TOKEN) docker run --rm --label "$LABEL" -e GITHUB_TOKEN -e PYTHONDONTWRITEBYTECODE=1 \
   -v "$PWD/agents:/repo/agents:ro" -v "$PWD/$FIX_DIR:/repo/$FIX_DIR" -w /repo "$PY_IMAGE" \
@@ -160,7 +187,17 @@ docker exec "$SANDBOX" sh -c 'cd /workspace/app && npx tsx /tmp/dbcheck.ts 2>&1 
   | tee /dev/stderr | grep -q "database layer ok" || die "the app's database layer does not work in the sandbox"
 
 if [ "$DRY" = 1 ]; then
-  assert_isolated "$SANDBOX"
+  # The dry run uses the same client container, mounts, save step and after-run check as the live run, with no key
+  # and no model call. Earlier dry runs skipped the client, and two mistakes in its check only showed up in paid runs.
+  say "dry run: starting the client container too (no key, no model call) to exercise the after-run steps"
+  docker run --name "$CLIENT" --label "$LABEL" --network "$NET" -e PYTHONPATH=/repo \
+    -v "$PWD/agents:/repo/agents:ro" -v "$PWD/$FIX_DIR:/out" "$CLIENT_IMAGE" \
+    python -c "from agents.fixer_agent import fix_run; fix_run.load_sdk(); print('the client image loads the OpenHands SDK')" \
+    || die "the client container failed"
+  salvage_output "$SANDBOX" "$FIX_DIR/tree.tar" || die "saving the sandbox output failed"
+  say "dry run: saved the sandbox output ($(wc -c < "$FIX_DIR/tree.tar" | tr -d ' ') bytes)"
+  check_isolation_after || die "isolation FAILED in the dry run: ${ISOLATION#FAILED: }"
+  say "isolation (after, dry run): $ISOLATION"
   OUTCOME=dry_run_ok; RC=0; say "dry run complete. No model call, no pull request, nothing logged"; exit 0
 fi
 
@@ -175,16 +212,17 @@ run_rc=$?
 OUTCOME=$(sed -n 's/.*"outcome": *"\([a-z_]*\)".*/\1/p' "$FIX_DIR/result.json" 2>/dev/null | head -n 1)
 [ -n "$OUTCOME" ] || OUTCOME=error
 
-# ---- 4. check ----
+# ---- 4. save, then check ----
+# Save the sandbox's output first, on every outcome. The isolation verdict below can only block publishing.
+save_output
 if check_isolation_after; then
-  say "isolation (after): $ISOLATION. The sandbox holds no credential, mount or port. The client held only the Anthropic key"
+  say "isolation (after): $ISOLATION. The sandbox holds no credential, mount or port. The client held only the Anthropic key and its two mounts"
 else
-  die "isolation FAILED after the run: ${ISOLATION#FAILED: }"
+  die "isolation FAILED after the run: ${ISOLATION#FAILED: }. The sandbox output is saved in $FIX_DIR/tree.tar and nothing was published"
 fi
 
-[ "$run_rc" = 0 ] && [ "$OUTCOME" = ready ] || die "the run did not produce a fix that passes the sanity check (outcome: $OUTCOME)"
-
-docker exec "$SANDBOX" tar -C /workspace/app --exclude=./node_modules -cf - . > "$FIX_DIR/tree.tar" || die "cannot copy the result out"
+[ "$run_rc" = 0 ] && [ "$OUTCOME" = ready ] || die "the run did not produce a fix that passes the sanity check (outcome: $OUTCOME). The sandbox output is saved in $FIX_DIR/tree.tar"
+[ -s "$FIX_DIR/tree.tar" ] || die "there is no saved sandbox output to publish"
 clear_containers
 
 # ---- 5. publish ----
