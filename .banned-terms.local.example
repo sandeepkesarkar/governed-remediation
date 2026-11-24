@@ -1,0 +1,14 @@
+# Banned terms for scripts/check-banned-terms.sh (make check-banned-terms).
+#
+# Copy this file to .banned-terms.local and put the real terms there. Git ignores that file,
+# so the terms are never published. This example holds no real term.
+#
+# One term per line. Blank lines and lines that start with # are ignored.
+# Matching is literal (not a regular expression) and ignores upper and lower case.
+# It covers file contents and file names. Nothing under app/ is checked.
+#
+# A copy of this file unchanged has no terms in it, and the check then FAILS on purpose:
+# a check with no terms has checked nothing.
+#
+# example-term-one
+# example term two
