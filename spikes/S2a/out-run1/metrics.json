@@ -1,0 +1,21 @@
+{
+  "status": "ConversationExecutionStatus.FINISHED",
+  "seconds": 4.3,
+  "model": "anthropic/claude-sonnet-5-5",
+  "max_budget_per_run": 1.0,
+  "max_iteration_per_run": 20,
+  "accumulated_cost": 0.0303965,
+  "accumulated_token_usage": {
+    "model": "default",
+    "prompt_tokens": 20026,
+    "completion_tokens": 385,
+    "cache_read_tokens": 9750,
+    "cache_write_tokens": 10039,
+    "reasoning_tokens": 0,
+    "context_window": 1000000,
+    "per_turn_token": 0,
+    "response_id": ""
+  },
+  "n_llm_calls": 0,
+  "per_call_costs": []
+}

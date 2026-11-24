@@ -8,8 +8,8 @@ import urllib.error
 
 import pytest
 
-from agents.ticket_agent import github
-from agents.ticket_agent.github import GitHubClient, GitHubError
+from agents.common import github
+from agents.common.github import GitHubClient, GitHubError
 
 TOKEN = "ghp_FAKETOKENMARKER1234567890"
 
@@ -265,3 +265,115 @@ def test_a_real_redirect_through_urllib_is_refused(code):
         server.server_close()
     assert TOKEN not in str(e.value)
     assert [h[0] for h in hits] == ["/start"]      # the redirect target was never requested
+
+
+# ---- calls added for the fix step (M2-7) ----
+
+def test_the_user_agent_names_the_step_that_uses_the_client():
+    t = Transport((200, []))
+    GitHubClient(TOKEN, "o/r", transport=t, user_agent="governed-remediation-fix-step").list_issues("x")
+    assert t.calls[0][2]["User-Agent"] == "governed-remediation-fix-step"
+
+
+def test_get_issue_reads_one_issue():
+    c, t = client((200, {"number": 3}))
+    assert c.get_issue(3) == {"number": 3}
+    assert t.calls[0][:2] == ("GET", "https://api.github.com/repos/o/r/issues/3")
+
+
+def test_get_branch_sha_returns_the_commit_sha():
+    c, t = client((200, {"object": {"sha": "a" * 40}}))
+    assert c.get_branch_sha("main") == "a" * 40
+    assert t.calls[0][1] == "https://api.github.com/repos/o/r/git/ref/heads/main"
+
+
+def test_get_branch_sha_returns_none_for_a_missing_branch():
+    c, _ = client((404, {"message": "Not Found"}))
+    assert c.get_branch_sha("fix/x") is None
+
+
+def test_get_branch_sha_fails_on_other_errors():
+    c, _ = client((403, {}))
+    with pytest.raises(GitHubError, match="HTTP 403"):
+        c.get_branch_sha("main")
+
+
+def test_get_branch_sha_rejects_an_odd_answer():
+    c, _ = client((200, {"object": {}}))
+    with pytest.raises(GitHubError, match="unexpected"):
+        c.get_branch_sha("main")
+
+
+@pytest.mark.parametrize("name", ["", "-x", "a b", "a..b", "x/", "/x", "a\nb", "x" * 201, "a~b", "a:b", ".hidden/x"])
+def test_branch_names_that_could_confuse_a_url_or_ref_are_refused(name):
+    c, _ = client()
+    with pytest.raises(GitHubError, match="branch name"):
+        c.get_branch_sha(name)
+
+
+def test_get_commit_tree_sha():
+    c, t = client((200, {"tree": {"sha": "b" * 40}}))
+    assert c.get_commit_tree_sha("a" * 40) == "b" * 40
+    assert t.calls[0][1] == f"https://api.github.com/repos/o/r/git/commits/{'a' * 40}"
+
+
+def test_get_commit_tree_sha_rejects_a_bad_sha_and_an_odd_answer():
+    c, _ = client((200, {"tree": {}}))
+    with pytest.raises(GitHubError, match="commit SHA"):
+        c.get_commit_tree_sha("not-a-sha")
+    with pytest.raises(GitHubError, match="unexpected"):
+        c.get_commit_tree_sha("a" * 40)
+
+
+def test_create_blob_sends_base64_and_returns_the_sha():
+    c, t = client((201, {"sha": "c" * 40}))
+    assert c.create_blob(b"hello") == "c" * 40
+    body = json.loads(t.calls[0][3])
+    assert body == {"content": "aGVsbG8=", "encoding": "base64"}
+    assert t.calls[0][1].endswith("/git/blobs")
+
+
+def test_create_tree_commit_and_ref():
+    c, t = client((201, {"sha": "d" * 40}), (201, {"sha": "e" * 40}), (201, {"ref": "refs/heads/fix/x"}))
+    tree = c.create_tree("b" * 40, [("app/a.ts", "c" * 40)])
+    assert tree == "d" * 40
+    assert json.loads(t.calls[0][3]) == {
+        "base_tree": "b" * 40, "tree": [{"path": "app/a.ts", "mode": "100644", "type": "blob", "sha": "c" * 40}]}
+    commit = c.create_commit("msg", "d" * 40, "a" * 40)
+    assert commit == "e" * 40
+    assert json.loads(t.calls[1][3]) == {"message": "msg", "tree": "d" * 40, "parents": ["a" * 40]}
+    c.create_branch("fix/x", "e" * 40)
+    assert json.loads(t.calls[2][3]) == {"ref": "refs/heads/fix/x", "sha": "e" * 40}
+
+
+def test_create_calls_reject_an_answer_without_a_sha():
+    c, _ = client((201, {}), (201, {}), (201, {}))
+    with pytest.raises(GitHubError, match="unexpected"):
+        c.create_blob(b"x")
+    with pytest.raises(GitHubError, match="unexpected"):
+        c.create_tree("b" * 40, [("app/a.ts", "c" * 40)])
+    with pytest.raises(GitHubError, match="unexpected"):
+        c.create_commit("m", "d" * 40, "a" * 40)
+
+
+def test_create_pull_request_and_list_by_head():
+    c, t = client((201, {"number": 9, "html_url": "u"}), (200, [{"number": 9}]))
+    pr = c.create_pull_request("T", "B", head="fix/x", base="main")
+    assert pr["number"] == 9
+    assert json.loads(t.calls[0][3]) == {"title": "T", "body": "B", "head": "fix/x", "base": "main"}
+    assert c.list_pull_requests_by_head("fix/x") == [{"number": 9}]
+    assert "head=o%3Afix%2Fx" in t.calls[1][1] and "state=all" in t.calls[1][1]
+
+
+def test_list_pull_requests_rejects_an_odd_answer():
+    c, _ = client((200, {"x": 1}))
+    with pytest.raises(GitHubError, match="unexpected"):
+        c.list_pull_requests_by_head("fix/x")
+
+
+def test_the_token_never_appears_in_a_url_or_body_of_the_new_calls():
+    c, t = client((201, {"sha": "c" * 40}), (201, {"number": 1}))
+    c.create_blob(b"x")
+    c.create_pull_request("T", "B", head="fix/x", base="main")
+    for _, url, _, body in t.calls:
+        assert TOKEN not in url and TOKEN.encode() not in (body or b"")

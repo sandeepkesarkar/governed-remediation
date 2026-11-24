@@ -8,7 +8,7 @@ import json
 import pytest
 
 from agents.ticket_agent import sarif, ticket
-from agents.ticket_agent.github import GitHubError
+from agents.common.github import GitHubError
 from agents.ticket_agent.ticket import TicketError
 from tests.test_sarif import SECRET_TEXT, doc, result, rule
 
