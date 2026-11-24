@@ -38,7 +38,9 @@ Notes:
 | Python | 3.14.6 | `/usr/local/bin/python3` |
 | make | GNU Make 3.81 | `/usr/bin/make` |
 
-Our own Python tooling will run in a project virtual environment, not in this system Python. **Update, M2-4 onward:** tooling with a third-party dependency (pytest and friends) runs instead in the pinned `python` container (see below); no venv was needed. The exploit step (M2-6) is the one exception: it runs directly on the Mac with the system `python3`, standard library only, because it must reach the app container's loopback-published port from the Mac's real network stack, which a container does not see the same way (`docker run` does not reach the Mac's own 127.0.0.1). This matches `scripts/check-loopback.sh`, which also runs directly on the Mac.
+Our own Python tooling will run in a project virtual environment, not in this system Python. **Update, M2-4 onward:** tooling with a third-party dependency (pytest and friends) runs instead in the pinned `python` container (see below); no venv was needed. The exploit step (M2-6) runs the same way, in a container (see "Exploit step" below).
+
+`scripts/check-loopback.sh` still runs directly on the Mac, and that is not the same kind of thing. It checks a fact only the host can observe: whether the app's *published host port* is actually bound to `127.0.0.1` and not reachable from the Mac's LAN address. That check has to run on the Mac. The exploit step does not need to observe anything about the host; it only needs to reach the app container, which it can do entirely inside Docker.
 
 ## Before each session
 
@@ -109,6 +111,8 @@ The Semgrep image (`semgrep/semgrep:1.185.0`) is now also used by `make scan`, a
 
 ## Exploit step
 
-`make exploit` (M2-6) runs `agents/exploit_agent/login_sqli.py` directly on the Mac with the
-system `python3` (standard library only, **no new library or image pinned**). See the note
-above for why this step, alone among our own Python tooling, is not containerized.
+`make exploit` (M2-6) runs `agents/exploit_agent/login_sqli.py` as a one-off container, in the same pinned `python` image the ticket step uses, so **no new library or image is pinned**. It uses the Python standard library only.
+
+The container joins `exploit-net` (`compose.yaml`), a second network that `juice-shop-prod` also joins, alongside its existing `project-net`. `exploit-net` is marked `internal: true`: a container with only that network has no gateway, no DNS and no internet (proved live by `tests/network-isolation-test.sh`). `project-net` itself is unchanged from M2-3, including the loopback-published port that `make up` and `scripts/check-loopback.sh` depend on; Docker cannot publish a host port on an `internal: true` network at all, which is why `exploit-net` is a second network rather than a change to `project-net`.
+
+The script refuses to target anything but the app's own compose service name (`juice-shop-prod`), checked before any request is sent. `agents/` is mounted read-only, `out/` read-write (this step writes its result file; the ticket step only reads).
