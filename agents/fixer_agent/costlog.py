@@ -18,10 +18,15 @@ from pathlib import Path
 
 DEFAULT_MODEL = "anthropic/claude-sonnet-5-5"
 EXIT_COST_PROBLEM = 3
+EXIT_ISOLATION = 4
+MAX_ISOLATION_TEXT = 300
 
 
-def build_entry(*, issue, metrics, outcome, now=None, model=DEFAULT_MODEL, no_model_call=False):
-    """One log line. With no metrics, the cost is unknown (None), unless no model call was made (then 0.0)."""
+def build_entry(*, issue, metrics, outcome, now=None, model=DEFAULT_MODEL, no_model_call=False, isolation=None):
+    """One log line. With no metrics, the cost is unknown (None), unless no model call was made (then 0.0).
+
+    isolation is the result of the check after the run: "passed", "not_checked" or "FAILED: ...". A failed
+    check becomes the outcome, so it cannot hide behind the run's own outcome (kept as run_outcome)."""
     now = now or datetime.now(timezone.utc)
     m = metrics or {}
     cost = m.get("cost_usd")
@@ -38,7 +43,9 @@ def build_entry(*, issue, metrics, outcome, now=None, model=DEFAULT_MODEL, no_mo
         "cost_usd": cost,
         "budget_cap_hit": m.get("budget_cap_hit"),
         "iteration_cap_hit": m.get("iteration_cap_hit"),
-        "outcome": outcome,
+        "outcome": "isolation_failed" if str(isolation or "").startswith("FAILED") else outcome,
+        "run_outcome": outcome,
+        "isolation_after": (isolation or "not_checked")[:MAX_ISOLATION_TEXT],
         "seconds": m.get("seconds"),
         "final": bool(m.get("final", True)) if metrics is not None or no_model_call else False,
     }
@@ -82,6 +89,7 @@ def report(entry, total, runs, unknown):
         f"cache read {entry['cache_read_tokens']}, cache write {entry['cache_write_tokens']}",
         f"cost: running total ${total:.4f} over {runs} runs (from the log)",
     ]
+    lines.append(f"cost: isolation after the run: {entry['isolation_after']}")
     if entry["budget_cap_hit"]:
         lines.append("cost: the budget cap was hit")
     if entry["iteration_cap_hit"]:
@@ -111,12 +119,13 @@ def main(argv=None, now=None):
     rec.add_argument("--outcome", required=True)
     rec.add_argument("--metrics", help="the metrics.json the fix run wrote")
     rec.add_argument("--model", default=DEFAULT_MODEL)
+    rec.add_argument("--isolation", default=None, help='result of the check after the run: passed, not_checked or "FAILED: reason"')
     rec.add_argument("--no-model-call", action="store_true", help="the run stopped before any model call")
     args = ap.parse_args(argv)
 
     metrics = _read_metrics(args.metrics) if args.metrics else None
     entry = build_entry(issue=args.issue, metrics=metrics, outcome=args.outcome, now=now,
-                        model=args.model, no_model_call=args.no_model_call)
+                        model=args.model, no_model_call=args.no_model_call, isolation=args.isolation)
     append(args.log, entry)
     total, runs, unknown = running_total(args.log)
     print(report(entry, total, runs, unknown))
@@ -134,6 +143,10 @@ def main(argv=None, now=None):
         elif not entry["final"]:
             print("cost: WARNING the figure is a lower bound: the run stopped before the final count. "
                   "Check the Anthropic console", file=sys.stderr)
+    if entry["outcome"] == "isolation_failed":
+        print(f"cost: ISOLATION FAILED after the run ({entry['run_outcome']}): {entry['isolation_after']}",
+              file=sys.stderr)
+        return EXIT_ISOLATION
     return code
 
 
