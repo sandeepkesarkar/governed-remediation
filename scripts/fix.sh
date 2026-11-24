@@ -1,7 +1,7 @@
 #!/bin/sh
 # Step "fix" (specs/M2-thin-slice.md, section 2, step 5; plan M2-7). PAID: one OpenHands run on the Anthropic API.
 #
-# Usage: scripts/fix.sh [--dry-run] [ISSUE]     (ISSUE defaults to 3)
+# Usage: scripts/fix.sh [--dry-run | --publish-only] [ISSUE]     (ISSUE defaults to 3)
 #
 # What happens, in order:
 #   1. task     A python container reads the issue (token GITHUB_TOKEN, read use) and writes the task.
@@ -18,6 +18,12 @@
 # --dry-run does steps 1 and 2, the baseline specs and the database baseline, and then starts the client container (with no key)
 # and runs the same save-output and after-run isolation steps as a live run. It makes no model call, needs no
 # Anthropic key and no fix token, and writes no cost line. A run that stops before the model is called writes none either.
+#
+# --publish-only publishes a run that was already saved in out/fix (tree.tar), with no model call and no live isolation
+# check. First it checks, from that run's own recorded results and not from the tar's presence, that the run's outcome
+# was ready, the sanity check passed, the cost is real, and the cost-log entry for that run says isolation_after
+# passed (agents/fixer_agent/saved_run.py). Then it runs the same publish step as a live run, with every one of its
+# checks. It is for a run whose publishing failed after a clean run, once the cause has been fixed.
 #
 # The whole run is limited to FIX_WALL_SECONDS (default 900). The cost cap and the iteration cap are enforced by
 # OpenHands inside the run. The wall clock is a separate backstop in case cost reporting stalls.
@@ -42,8 +48,11 @@ WALL=${FIX_WALL_SECONDS:-900}
 FIX_DIR=out/fix
 LOG=out/cost-log.jsonl
 
-DRY=0
-[ "${1:-}" = "--dry-run" ] && { DRY=1; shift; }
+DRY=0; PUBONLY=0
+case "${1:-}" in
+  --dry-run) DRY=1; shift;;
+  --publish-only) PUBONLY=1; shift;;
+esac
 ISSUE=${1:-3}
 EXPECT="app/$EXPECT_FILE_DEFAULT:$EXPECT_CWE_DEFAULT"
 
@@ -119,21 +128,50 @@ check_isolation_after() {
 # ---- before anything is spent or started ----
 docker info >/dev/null 2>&1 || die "Docker is not running. Start Rancher Desktop: rdctl start"
 mkdir -p out
-[ -n "$(env_value GITHUB_TOKEN)" ] || die "GITHUB_TOKEN is not set (names are in .env.example)"
+[ "$PUBONLY" = 1 ] || [ -n "$(env_value GITHUB_TOKEN)" ] || die "GITHUB_TOKEN is not set (names are in .env.example)"
 if [ "$DRY" = 0 ]; then
-  [ -n "$(env_value ANTHROPIC_API_KEY)" ] || die "ANTHROPIC_API_KEY is not set (names are in .env.example)"
+  [ "$PUBONLY" = 1 ] || [ -n "$(env_value ANTHROPIC_API_KEY)" ] || die "ANTHROPIC_API_KEY is not set (names are in .env.example)"
   [ -n "$(env_value GITHUB_FIX_TOKEN)" ] || die "GITHUB_FIX_TOKEN is not set. Create it first (see docs/ENVIRONMENT.md) and put it in .env"
 fi
 remote=$(git remote get-url origin 2>/dev/null) || die "no git remote named origin"
 repo=$(printf '%s' "$remote" | sed -e 's#^git@github.com:##' -e 's#^https://github.com/##' -e 's#\.git$##')
 git fetch -q origin main 2>/dev/null || die "cannot fetch origin/main"
-git diff --quiet origin/main -- app/ || die "app/ differs from origin/main. The pull request is made against main, so the copy must match it"
-docker image inspect "$CLIENT_IMAGE" >/dev/null 2>&1 || die "the client image is missing. Run: make build-fixer-client"
+if [ "$PUBONLY" = 0 ]; then
+  git diff --quiet origin/main -- app/ || die "app/ differs from origin/main. The pull request is made against main, so the copy must match it"
+  docker image inspect "$CLIENT_IMAGE" >/dev/null 2>&1 || die "the client image is missing. Run: make build-fixer-client"
+fi
 case "$ISSUE" in ''|*[!0-9]*) die "the issue must be a number";; esac
 
-# The watchdog stops the script and frees it from a waiting client. It leaves the sandbox alone, so cleanup can save its output.
 ( sleep "$WALL"; kill -TERM $$ 2>/dev/null; sleep 3; docker rm -f "$CLIENT" >/dev/null 2>&1 ) &
 WATCHDOG=$!
+
+# The publish step, shared by a live run and --publish-only. The comparison base is origin/main's own files, exported
+# with "git archive" (trusted: our own repository), and the commit they came from. publish.py compares the agent's files
+# with that base byte for byte, and stops if GitHub's main is no longer that commit.
+publish_saved() {
+  git fetch -q origin main || return 1
+  BASE_SHA=$(git rev-parse origin/main) || return 1
+  rm -rf "$FIX_DIR/base"; mkdir -p "$FIX_DIR/base"
+  git archive origin/main app | tar -x -C "$FIX_DIR/base" || return 1
+  GITHUB_FIX_TOKEN=$(env_value GITHUB_FIX_TOKEN) docker run --rm --label "$LABEL" -e GITHUB_FIX_TOKEN -e PYTHONDONTWRITEBYTECODE=1 \
+    -v "$PWD/agents:/repo/agents:ro" -v "$PWD/$FIX_DIR:/repo/$FIX_DIR" -w /repo "$PY_IMAGE" \
+    python -m agents.fixer_agent.publish --repo "$repo" --task "$FIX_DIR/task.json" --tree "$FIX_DIR/tree.tar" \
+    --base-dir "$FIX_DIR/base/app" --base-sha "$BASE_SHA" --metrics "$FIX_DIR/metrics.json" \
+    --sanity "$FIX_DIR/sanity.json" --pr-out "$FIX_DIR/pr.json"
+}
+
+if [ "$PUBONLY" = 1 ]; then
+  say "publish-only: checking the saved run first (no model call, no live isolation check)"
+  docker run --rm --label "$LABEL" -e PYTHONDONTWRITEBYTECODE=1 \
+    -v "$PWD/agents:/repo/agents:ro" -v "$PWD/out:/repo/out:ro" -w /repo "$PY_IMAGE" \
+    python -m agents.fixer_agent.saved_run --fix-dir "$FIX_DIR" --log "$LOG" --issue "$ISSUE" \
+    || die "the saved run is not clean enough to publish"
+  say "publish-only: opening the pull request (no model, token GITHUB_FIX_TOKEN)"
+  publish_saved || { OUTCOME=publish_failed; die "publishing failed"; }
+  OUTCOME=pr_opened; RC=0
+  say "done. The pull request stays open and is NOT merged. It waits for the verify step (M2-8)"
+  exit 0
+fi
 
 # ---- 1. task ----
 # A saved sandbox output from an earlier run is never deleted. It is moved aside, with the time in its name.
@@ -227,11 +265,7 @@ clear_containers
 
 # ---- 5. publish ----
 say "opening the pull request (no model, token GITHUB_FIX_TOKEN)"
-GITHUB_FIX_TOKEN=$(env_value GITHUB_FIX_TOKEN) docker run --rm --label "$LABEL" -e GITHUB_FIX_TOKEN -e PYTHONDONTWRITEBYTECODE=1 \
-  -v "$PWD/agents:/repo/agents:ro" -v "$PWD/app:/repo/app:ro" -v "$PWD/$FIX_DIR:/repo/$FIX_DIR" -w /repo "$PY_IMAGE" \
-  python -m agents.fixer_agent.publish --repo "$repo" --task "$FIX_DIR/task.json" --tree "$FIX_DIR/tree.tar" \
-  --app-dir app --metrics "$FIX_DIR/metrics.json" --sanity "$FIX_DIR/sanity.json" --pr-out "$FIX_DIR/pr.json" \
-  || { OUTCOME=publish_failed; die "publishing failed"; }
+publish_saved || { OUTCOME=publish_failed; die "publishing failed"; }
 OUTCOME=pr_opened; RC=0
 say "done. The pull request stays open and is NOT merged. It waits for the verify step (M2-8)"
 exit 0

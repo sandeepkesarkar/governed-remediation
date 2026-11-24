@@ -88,9 +88,9 @@ def env(tmp_path):
     return tmp_path, app, tar
 
 
-def run(tmp_path, app, tar, gh, token=TOKEN):
+def run(tmp_path, app, tar, gh, token=TOKEN, base_sha=BASE):
     return publish.main(["--repo", "o/r", "--task", str(tmp_path / "task.json"), "--tree", str(tar),
-                         "--app-dir", str(app), "--metrics", str(tmp_path / "metrics.json"),
+                         "--base-dir", str(app), "--base-sha", base_sha, "--metrics", str(tmp_path / "metrics.json"),
                          "--sanity", str(tmp_path / "sanity.json"), "--pr-out", str(tmp_path / "pr.json")],
                         env={"GITHUB_FIX_TOKEN": token} if token else {}, transport=gh)
 
@@ -125,10 +125,12 @@ def test_read_tree_allows_directories_and_skips_noise_without_reading_it(tmp_pat
     assert publish.read_tree(tar) == {"routes/a.ts": b"a"}
 
 
-def test_read_tree_refuses_a_huge_file_and_too_many_files(tmp_path, monkeypatch):
-    tar = make_tar(tmp_path / "t.tar", {"routes/big.ts": b"x" * (publish.MAX_FILE_BYTES + 1)})
+def test_read_tree_refuses_a_file_above_the_hashing_ceiling_and_too_many_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(publish, "MAX_HASHED_BYTES", 1000)
+    tar = make_tar(tmp_path / "t.tar", {"routes/big.ts": b"x" * 1001})
     with pytest.raises(publish.PublishError, match="too large"):
         publish.read_tree(tar)
+    monkeypatch.undo()
     monkeypatch.setattr(publish, "MAX_MEMBERS", 2)
     tar = make_tar(tmp_path / "t2.tar", {f"routes/{i}.ts": b"x" for i in range(3)})
     with pytest.raises(publish.PublishError, match="too many"):
@@ -301,8 +303,8 @@ def test_a_missing_task_file_or_a_bad_repo_is_an_error(env, capsys):
     tmp, app, tar = env
     (tmp / "task.json").unlink()
     assert run(tmp, app, tar, Github()) == 1
-    assert publish.main(["--repo", "bad", "--task", "x", "--tree", "x", "--app-dir", "x", "--metrics", "x",
-                         "--sanity", "x", "--pr-out", "x"], env={"GITHUB_FIX_TOKEN": TOKEN}) == 1
+    assert publish.main(["--repo", "bad", "--task", "x", "--tree", "x", "--base-dir", "x", "--base-sha", BASE,
+                         "--metrics", "x", "--sanity", "x", "--pr-out", "x"], env={"GITHUB_FIX_TOKEN": TOKEN}) == 1
 
 
 def test_missing_metrics_or_sanity_files_do_not_stop_the_step(env):
@@ -310,3 +312,127 @@ def test_missing_metrics_or_sanity_files_do_not_stop_the_step(env):
     (tmp / "metrics.json").unlink()
     (tmp / "sanity.json").write_text("{nope")
     assert run(tmp, app, tar, Github()) == 0
+
+
+# ---- the two bugs found in the third live run ----
+# 1. A large file that is byte-identical to origin/main's version must not stop the run. Anything new or changed
+#    is held to the size cap, whatever its size.
+# 2. A .git/ folder (the agent ran "git init" in its copy) is scratch and must be ignored.
+
+BIG = b"B" * (publish.MAX_FILE_BYTES + 25_000)
+
+
+def test_read_tree_keeps_a_large_file_as_a_hash_not_as_bytes(tmp_path):
+    tar = make_tar(tmp_path / "t.tar", {"test/files/big.pdf": BIG, "routes/a.ts": b"a"})
+    tree = publish.read_tree(tar)
+    assert tree["routes/a.ts"] == b"a"
+    big = tree["test/files/big.pdf"]
+    assert isinstance(big, publish.LargeFile) and big.size == len(BIG)
+
+
+def test_a_large_file_identical_to_the_base_is_not_a_change(env):
+    tmp, app, _ = env
+    (app / "test/files").mkdir(parents=True, exist_ok=True)
+    (app / "test/files/big.pdf").write_bytes(BIG)
+    (app / "screenshots").mkdir()
+    (app / "screenshots/s.png").write_bytes(BIG)
+    tar = make_tar(tmp / "real.tar", {**FIXED, "test/files/big.pdf": BIG, "screenshots/s.png": BIG})
+    assert sorted(publish.changed_files(publish.read_tree(tar), app, TASK)) == ["routes/login.ts", SPEC]
+
+
+def test_a_large_file_that_differs_by_one_byte_is_refused(env):
+    tmp, app, _ = env
+    (app / "test/files").mkdir(parents=True, exist_ok=True)
+    (app / "test/files/big.pdf").write_bytes(BIG)
+    tar = make_tar(tmp / "t.tar", {**FIXED, "test/files/big.pdf": BIG[:-1] + b"X"})
+    with pytest.raises(publish.PublishError, match="too large"):
+        publish.changed_files(publish.read_tree(tar), app, TASK)
+
+
+def test_a_new_large_file_is_refused_even_in_an_allowed_folder(env):
+    tmp, app, _ = env
+    tar = make_tar(tmp / "t.tar", {**FIXED, "routes/huge.ts": BIG})
+    with pytest.raises(publish.PublishError, match="too large"):
+        publish.changed_files(publish.read_tree(tar), app, TASK)
+
+
+def test_a_large_changed_file_is_refused(env):
+    tmp, app, _ = env
+    (app / "routes").mkdir(exist_ok=True)
+    (app / "routes/login.ts").write_bytes(BIG)
+    tar = make_tar(tmp / "t.tar", {**FIXED, "routes/login.ts": BIG + b"more"})
+    with pytest.raises(publish.PublishError, match="too large"):
+        publish.changed_files(publish.read_tree(tar), app, TASK)
+
+
+def test_the_same_large_content_at_a_new_path_is_refused(env):
+    tmp, app, _ = env
+    (app / "test/files").mkdir(parents=True, exist_ok=True)
+    (app / "test/files/big.pdf").write_bytes(BIG)
+    tar = make_tar(tmp / "t.tar", {**FIXED, "test/files/copy-of-big.pdf": BIG})
+    with pytest.raises(publish.PublishError, match="too large"):
+        publish.changed_files(publish.read_tree(tar), app, TASK)
+
+
+def test_a_large_file_the_base_does_not_have_is_refused(env):
+    # (a path on the ignore list, such as ftp/, is dropped and never committed, so it is not a way in either)
+    tmp, app, _ = env
+    tar = make_tar(tmp / "t.tar", {**FIXED, "config/new-big.bin": BIG})
+    with pytest.raises(publish.PublishError, match="too large"):
+        publish.changed_files(publish.read_tree(tar), app, TASK)
+
+
+def real_shaped_tar(tmp, extra=None):
+    """A tar shaped like the one the sandbox gave us: the fix, a big unchanged file, and a .git folder."""
+    link = tarfile.TarInfo(".git/hooks/odd-link")
+    link.type, link.linkname = tarfile.SYMTYPE, "/etc/passwd"
+    folder = tarfile.TarInfo(".git")
+    folder.type = tarfile.DIRTYPE
+    files = {**FIXED, "test/files/big.pdf": BIG, ".git/HEAD": b"ref: refs/heads/main\n", ".git/config": b"[core]\n",
+             ".git/hooks/pre-commit.sample": b"#!/bin/sh\n"}
+    files.update(extra or {})
+    return make_tar(tmp / "real.tar", files, extra=[folder, link])
+
+
+def test_a_git_folder_is_ignored_even_with_a_symlink_inside_it(env):
+    tmp, app, _ = env
+    (app / "test/files").mkdir(parents=True, exist_ok=True)
+    (app / "test/files/big.pdf").write_bytes(BIG)
+    tree = publish.read_tree(real_shaped_tar(tmp))
+    assert not [p for p in tree if p.startswith(".git")]
+    assert sorted(publish.changed_files(tree, app, TASK)) == ["routes/login.ts", SPEC]
+
+
+def test_the_whole_step_publishes_a_real_shaped_tar(env, capsys):
+    tmp, app, _ = env
+    (app / "test/files").mkdir(parents=True, exist_ok=True)
+    (app / "test/files/big.pdf").write_bytes(BIG)
+    gh = Github()
+    assert run(tmp, app, real_shaped_tar(tmp), gh) == 0
+    tree = [b for m, p, b in gh.calls if p == "/git/trees"][0]
+    assert sorted(e["path"] for e in tree["tree"]) == ["app/routes/login.ts", "app/" + SPEC]
+    assert "pull/7" in capsys.readouterr().out
+
+
+def test_a_git_path_is_not_a_way_around_the_allowed_folders(env):
+    # ".git" is ignored, but a folder that only starts with the same letters is not
+    tmp, app, _ = env
+    tar = make_tar(tmp / "t.tar", {**FIXED, ".github/workflows/x.yml": b"x", ".gitignore": b"x"})
+    with pytest.raises(publish.PublishError, match="outside the allowed folders"):
+        publish.changed_files(publish.read_tree(tar), app, TASK)
+
+
+# ---- the base must be what GitHub's main is now ----
+
+def test_a_base_that_is_not_the_current_main_stops_the_step_before_any_write(env, capsys):
+    tmp, app, tar = env
+    gh = Github()
+    assert run(tmp, app, tar, gh, base_sha="9" * 40) == 1
+    assert not [c for c in gh.calls if c[0] == "POST"]
+    assert "main has moved" in capsys.readouterr().err
+
+
+def test_a_new_large_file_in_an_ignored_folder_is_dropped_not_committed(env):
+    tmp, app, _ = env
+    tar = make_tar(tmp / "t.tar", {**FIXED, "ftp/new-big.bin": BIG})
+    assert sorted(publish.changed_files(publish.read_tree(tar), app, TASK)) == ["routes/login.ts", SPEC]

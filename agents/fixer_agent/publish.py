@@ -7,17 +7,23 @@ request). No git command and no git credentials are needed.
 
 It holds the fix token (GITHUB_FIX_TOKEN: Contents and Pull requests, write). The agent never sees it.
 
+The comparison base is origin/main's own files, exported by the launcher with "git archive" into --base-dir, not the
+working folder. --base-sha is the commit they came from. The step stops if GitHub's main is not that commit.
+
 Checks before anything is written:
   - the tar holds only plain files and folders, with safe paths and sane sizes
-  - only files in routes/, lib/, models/ and test/server/ differ from the repository (a few runtime noise
-    files are ignored), nothing is deleted, and there are at most 10 changed files, all text
+  - only files in routes/, lib/, models/ and test/server/ differ from the base (a few runtime noise files and the
+    agent's own .git folder are ignored), nothing is deleted, and there are at most 10 changed files, all text
+  - a file byte-identical to the base is never a change, whatever its size. A new or changed file is held to
+    200 KB, whatever its path
   - the target file changed, and the regression test is present
   - neither the branch nor a pull request for it exists yet, so a second run never makes a second pull request
 
 Command line (used by scripts/fix.sh):
-    python -m agents.fixer_agent.publish --repo OWNER/NAME --task task.json --tree tree.tar --app-dir app
+    python -m agents.fixer_agent.publish --repo OWNER/NAME --task task.json --tree tree.tar --base-dir BASE --base-sha SHA
 """
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -29,10 +35,11 @@ from agents.fixer_agent import sanity
 
 TOKEN_VARIABLE = "GITHUB_FIX_TOKEN"   # a different variable from the ticket token on purpose
 ALLOWED_PREFIXES = ("routes/", "lib/", "models/", "test/server/")
-IGNORED_PREFIXES = ("node_modules/", "logs/", "coverage/", ".nyc_output/", "build/", "dist/", "tmp/",
+IGNORED_PREFIXES = (".git/", "node_modules/", "logs/", "coverage/", ".nyc_output/", "build/", "dist/", "tmp/",
                     "data/juiceshop", "ftp/", "uploads/")
 IGNORED_NAMES = {"package-lock.json"}
-MAX_FILE_BYTES = 200_000
+MAX_FILE_BYTES = 200_000          # the cap for a new or changed file
+MAX_HASHED_BYTES = 100_000_000    # a larger file than this is refused outright, even to compare it
 MAX_MEMBERS = 20_000
 MAX_FILES = 10
 BASE_BRANCH = "main"
@@ -40,6 +47,13 @@ BASE_BRANCH = "main"
 
 class PublishError(Exception):
     """The step stops. The message says why, without tokens."""
+
+
+class LargeFile:
+    """A file above the size cap. Only its size and hash are kept, to compare it with the base."""
+
+    def __init__(self, size, sha256):
+        self.size, self.sha256 = size, sha256
 
 
 def is_ignored(rel):
@@ -67,36 +81,58 @@ def read_tree(tar_path):
                     continue
                 if not member.isreg():
                     raise PublishError(f"the tar has an entry that is not a plain file ({name})")
-                if member.size > MAX_FILE_BYTES:
+                if member.size > MAX_HASHED_BYTES:
                     raise PublishError(f"a file in the tar is too large ({name})")
-                files[name] = tf.extractfile(member).read()
+                if member.size > MAX_FILE_BYTES:
+                    digest = hashlib.sha256()
+                    with tf.extractfile(member) as f:
+                        for chunk in iter(lambda: f.read(1 << 20), b""):
+                            digest.update(chunk)
+                    files[name] = LargeFile(member.size, digest.hexdigest())
+                else:
+                    files[name] = tf.extractfile(member).read()
     except tarfile.TarError:
         raise PublishError("cannot read the tar file") from None
     return files
 
 
-def _original(app_dir, rel):
-    root = Path(app_dir).resolve()
+def _base_path(base_dir, rel):
+    root = Path(base_dir).resolve()
     target = (root / rel).resolve()
     if root not in target.parents:
-        raise PublishError("a path leaves the app folder")
-    try:
-        return target.read_bytes()
-    except (FileNotFoundError, IsADirectoryError):
-        return None
+        raise PublishError("a path leaves the base folder")
+    return target
 
 
-def changed_files(tree, app_dir, task):
+def _same_as_base(base_dir, rel, data):
+    """True only if the base has this exact path with exactly these bytes."""
+    target = _base_path(base_dir, rel)
+    if not target.is_file():
+        return False
+    if isinstance(data, LargeFile):
+        if target.stat().st_size != data.size:
+            return False
+        digest = hashlib.sha256()
+        with open(target, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                digest.update(chunk)
+        return digest.hexdigest() == data.sha256
+    return target.read_bytes() == data
+
+
+def changed_files(tree, base_dir, task):
     """{path: bytes} to commit. Raises PublishError if the result breaks any rule."""
     changes = {}
     for rel, data in sorted(tree.items()):
-        if is_ignored(rel) or _original(app_dir, rel) == data:
+        if is_ignored(rel) or _same_as_base(base_dir, rel, data):
             continue
+        if isinstance(data, LargeFile):
+            raise PublishError(f"a new or changed file is too large ({rel}, the limit is {MAX_FILE_BYTES} bytes)")
         if not rel.startswith(ALLOWED_PREFIXES):
             raise PublishError(f"the agent changed a file outside the allowed folders ({rel})")
         changes[rel] = data
 
-    root = Path(app_dir).resolve()
+    root = Path(base_dir).resolve()
     for prefix in ALLOWED_PREFIXES:
         folder = root / prefix
         for f in sorted(folder.rglob("*")) if folder.is_dir() else []:
@@ -111,6 +147,8 @@ def changed_files(tree, app_dir, task):
     if len(changes) > MAX_FILES:
         raise PublishError(f"too many changed files ({len(changes)}, the limit is {MAX_FILES})")
     for rel, data in changes.items():
+        if len(data) > MAX_FILE_BYTES:
+            raise PublishError(f"a new or changed file is too large ({rel}, the limit is {MAX_FILE_BYTES} bytes)")
         try:
             data.decode("utf-8")
         except UnicodeDecodeError:
@@ -156,7 +194,7 @@ def _json(path):
         return None
 
 
-def publish(client, task, changes, body, model):
+def publish(client, task, changes, body, model, expected_base_sha):
     """Branch, commit, pull request. Returns the pull request answer."""
     branch = task["branch"]
     if client.get_branch_sha(branch) is not None:
@@ -167,6 +205,9 @@ def publish(client, task, changes, body, model):
     base_sha = client.get_branch_sha(BASE_BRANCH)
     if base_sha is None:
         raise PublishError(f"the base branch {BASE_BRANCH} was not found")
+    if base_sha != expected_base_sha:
+        raise PublishError(f"{BASE_BRANCH} has moved since the base files were exported. Nothing was changed. "
+                           "Run the step again")
     tree_sha = client.create_tree(client.get_commit_tree_sha(base_sha),
                                   [(f"app/{p}", client.create_blob(d)) for p, d in sorted(changes.items())])
     message = (f"{task['title']}\n\nWritten by the OpenHands fixer ({model}) from issue #{task['issue']}. "
@@ -186,7 +227,8 @@ def main(argv=None, env=None, transport=None):
     ap.add_argument("--repo", required=True)
     ap.add_argument("--task", required=True)
     ap.add_argument("--tree", required=True)
-    ap.add_argument("--app-dir", required=True)
+    ap.add_argument("--base-dir", required=True, help="origin/main's app/ files, exported with git archive")
+    ap.add_argument("--base-sha", required=True, help="the commit the base files came from")
     ap.add_argument("--metrics", required=True)
     ap.add_argument("--sanity", required=True)
     ap.add_argument("--pr-out", required=True)
@@ -205,13 +247,13 @@ def main(argv=None, env=None, transport=None):
         if not isinstance(task, dict):
             raise PublishError("cannot read the task file")
         metrics, sanity_result = _json(args.metrics), _json(args.sanity)
-        changes = changed_files(read_tree(args.tree), args.app_dir, task)
+        changes = changed_files(read_tree(args.tree), args.base_dir, task)
         body = build_body(task, sorted(changes), metrics if isinstance(metrics, dict) else None,
                           sanity_result if isinstance(sanity_result, dict) else None)
         client = GitHubClient(token, args.repo, user_agent="governed-remediation-fix-step",
                               **({"transport": transport} if transport else {}))
         pr = publish(client, task, changes, body, (metrics or {}).get("model", "unknown")
-                     if isinstance(metrics, dict) else "unknown")
+                     if isinstance(metrics, dict) else "unknown", args.base_sha)
     except (PublishError, GitHubError) as e:
         return fail(str(e))
     Path(args.pr_out).write_text(json.dumps({"number": pr["number"], "url": pr["html_url"],
