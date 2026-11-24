@@ -20,3 +20,6 @@ env/
 
 # Scan output. Never commit it.
 out/
+
+# Project level files
+.banned-terms.local
