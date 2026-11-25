@@ -141,3 +141,7 @@ All three live in the local `.env` (git ignores it). `.env.example` lists the na
 3. Expiration: 30 days.
 4. Repository permissions: Contents **Read and write**, Pull requests **Read and write**. Metadata is added as read only. Nothing else.
 5. Copy the token once. Add a line `GITHUB_FIX_TOKEN=<the token>` to `.env`. Do not paste it into a chat, a terminal history or a file that is tracked.
+
+## Verify step
+
+`make verify PR=13` (`scripts/verify.sh`). No model call. Uses only images already pinned above: the Node image (`NODE_REF` in the `Makefile`, for the test container and the build), the pinned Semgrep image and the pinned Python image. Objects it creates, all labelled and removed on exit: containers `gr-verify-tests` and `gr-verify-app`, networks `gr-verify-testnet` (install only) and `gr-verify-net` (`internal`, no route out), image `governed-remediation/juice-shop:verify-pr<N>`. The test container runs with every capability dropped, 3 GB memory and no mounts, and has no network once dependencies are installed. Needs `GITHUB_TOKEN`. **Open:** posting the comment on a pull request returns 403 with Issues write alone. GitHub accepts `issues=write; pull_requests=write` for that call, so the token needs Pull requests write too (owner decision pending). Takes about 15 minutes, most of it the image build and `npm install`.
