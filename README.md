@@ -10,16 +10,29 @@ The vulnerable app is [OWASP Juice Shop](https://github.com/juice-shop/juice-sho
 
 | Milestone | What | State |
 |---|---|---|
-| M0 | Setup: repo, rules, plan, container safety baseline, public-readiness checks | Mostly done. Two owner tasks are open (spending limit on the model key, and the token for this repo). |
-| M1 | Local spikes: app in Docker, scanners, exploit, similarity match | Done except the fixer spike (S2a), which needs a paid model call |
-| M2 | Local thin slice: one finding through the whole loop on one Mac | Started. Done: spec, vendored Juice Shop, step "up", step "scan" with a SARIF reader. The cutover to this public repo (M2-4b) is done. Next: the ticket step. |
+| M0 | Setup: repo, rules, plan, container safety baseline, public-readiness checks | Nearly done. One owner task is open: the spending limit on the model key (M0-6). |
+| M1 | Local spikes: app in Docker, scanners, exploit, similarity match | Done |
+| M2 | Local thin slice: one finding through the whole loop on one Mac | Mostly done. Ticket, exploit, fix (three paid OpenHands runs, $0.3453 in total), verify, and the human merge of fix pull request #13 (M2-9) are done. Next: deploy and confirm (M2-10). |
 | M3 to M7 | Real parts in the loop, strengthen, AWS hosting, governance, CloudBees CI | Planned |
 
 The task list and its status are in [`docs/PLAN.md`](docs/PLAN.md).
 
+## Quickstart
+
+Each step is one `make` target. Run `make help` for the full list. The common ones:
+
+- `make build-app`, `make up`: build and start the vulnerable app on `127.0.0.1`.
+- `make scan`, `make ticket`, `make exploit`: scan with Semgrep, file the issue, run the exploit against the local container.
+- `make fix-dry-run`, `make fix`, `make fix-publish-saved`: the fix step. `make fix` is **paid**. Run the dry run first.
+- `make verify PR=<n>`: mechanical evidence for a fix pull request, posted as one comment. No model call.
+- `make test`, `make check-banned-terms`, `make scan-secrets`: the checks.
+- `make down`, `make clean-all`: stop the app, remove everything labelled for this project.
+
+Tokens and keys are named in [`.env.example`](.env.example) and explained in [`docs/ENVIRONMENT.md`](docs/ENVIRONMENT.md).
+
 ## The loop
 
-![The loop: scan, create tickets, triage, fix, review and verify, approve and merge, deploy, confirm, close. Triage and the memory ledger are dashed because they are planned.](docs/images/workflow-loop.svg)
+![The loop: scan, create tickets, triage, fix, review and verify, approve and merge, deploy, confirm. The issue closes when GitHub sees a closing keyword in a merged pull request, which is a known risk and not a controlled step. Triage and the memory ledger are dashed because they are planned.](docs/images/workflow-loop.svg)
 
 Dashed boxes are planned and not built.
 

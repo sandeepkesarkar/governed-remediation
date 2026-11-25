@@ -5,7 +5,7 @@
 | Version | 0.13 (draft for review) |
 | Date | 2026-11-18 |
 | Owner | Sandeep Kesarkar |
-| Status | Design agreed in brainstorm. Nothing is built yet. The plan is in `docs/PLAN.md`. |
+| Status | Design agreed in brainstorm, now partly built (as of 2026-11-25). M0 is nearly done (only the model-key spending limit, M0-6, is open). The non-fixer spikes of M1 are done. M2 has shipped the ticket, exploit, fix, and verify steps. The fix step made three paid OpenHands runs ($0.3453 in total), and the human merged the resulting fix pull request (#13). Deploy and confirm (M2-10) is next. Everything after M2 is still design. The living detail is in `docs/PLAN.md`. |
 
 This document is the basis for later development. Each numbered design section is meant to become one or more specs (for example in SpecKit). Items marked **(assumption)** or **(unverified)** must be settled by the spikes in `docs/PLAN.md` before the specs that depend on them are written.
 
@@ -96,7 +96,7 @@ Local safety rules:
 - Nothing from Juice Shop is installed on the Mac. It runs only in containers.
 - Every published port is bound to `127.0.0.1`, so nothing else on the network can reach the vulnerable app.
 - Every container, image, volume and network carries the label `project=governed-remediation`, and one command removes all of them.
-- The fixer never uses the unsandboxed runtime. It gets the model key and, later, a narrow GitHub token. It gets no AWS credentials and no other folders from the Mac.
+- The fixer never uses the unsandboxed runtime. It gets the model key and, later, a narrow GitHub token (the three tokens in use today are in `docs/ENVIRONMENT.md`). It gets no AWS credentials and no other folders from the Mac.
 
 How the local stage differs from the AWS stage:
 
@@ -281,8 +281,10 @@ sequenceDiagram
   J->>P: Deploy the merge with rolling replace
   J->>P: Run exploit scripts and live scan again
   J->>S: Store results
-  T->>G: Close the issue as fixed-verified
+  Note over G: The issue closes when a merged PR body has a closing keyword, not when a step decides it
 ```
+
+**How an issue closes today.** No agent in this system closes an issue on purpose. GitHub closes an issue the moment a merged pull request body mentions a closing keyword for it, even when the text only quotes or describes something else. The fix pull request carries `Closes #N`, so the issue closes at merge, before deploy and confirm have run. This has already happened: issue #3 closed a full day before its fix was verified or merged, because PR #14's body quoted PR #13's text (recorded in `docs/PLAN.md`, M0-14). The rule "no closing keywords in PR text unless the PR is meant to close that issue" is a written convention only. No check enforces it. This is a known, open risk, not a controlled step. The planned `fixed-verified` close in the design below is not built.
 
 ## 4. Components
 
@@ -396,7 +398,7 @@ OpenHands (https://github.com/OpenHands/openhands) is the open-source AI coding 
 - **One pull request per code finding.** Dependency upgrades are grouped into one pull request.
 - **Two attempts.** After the second failure it labels the ticket `needs-human` and explains what it tried.
 - May respond to reviewer comments once. After that the pull request goes to the human as it stands.
-- Opens pull requests with its GitHub App token. Pull requests opened with GitHub's default workflow token do not trigger other workflows, so the reviewers would never run.
+- Opens pull requests with its GitHub App token (today, a fine-grained token: see `docs/ENVIRONMENT.md`). Pull requests opened with GitHub's default workflow token do not trigger other workflows, so the reviewers would never run.
 
 ### Reviewers
 
@@ -603,7 +605,7 @@ v1 keeps everything in one repo and does not build this.
 
 ## 16. Repo layout
 
-The repo is private and lives in the owner's personal GitHub account. Branch protection on a private repo needs a paid GitHub plan (GitHub Pro for a personal account). The human-only merge control depends on it, so that plan, or a public repo, must be in place before milestone M6.
+The repo is public, in the owner's personal GitHub account. The cutover from the private repo happened on 2026-11-19 (M2-4b). Branch protection on a public repo is free, so the human-only merge control does not depend on a paid plan.
 
 ```
 governed-remediation/
