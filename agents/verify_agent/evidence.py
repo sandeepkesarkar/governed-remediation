@@ -14,6 +14,9 @@ Four checks (each ends as pass, fail, warn, error or not run):
 The comment carries a hidden marker. A second run updates that comment and never adds another.
 The re-scan check keeps only file, line and CWE. It never copies Semgrep message text.
 
+The token is GITHUB_VERIFY_TOKEN (Issues and Pull requests write). It reads the pull request and the issue, and posts
+both comments: the full evidence on the pull request, and a short linked summary on the issue (spec section 4).
+
 Command line (used by scripts/verify.sh):
     python -m agents.verify_agent.evidence pr-info --repo O/N --pr N --dir DIR
     python -m agents.verify_agent.evidence scope --dir DIR
@@ -30,8 +33,9 @@ from pathlib import Path
 from agents.common.github import GitHubClient, GitHubError
 from agents.ticket_agent import sarif, ticket
 
-TOKEN_VARIABLE = "GITHUB_TOKEN"   # Issues read and write also covers comments on a pull request
+TOKEN_VARIABLE = "GITHUB_VERIFY_TOKEN"   # Issues and Pull requests write, nothing else. Not the ticket or fix token
 MARKER = "<!-- gr:evidence -->"
+SUMMARY_MARKER = "<!-- gr:evidence-summary -->"   # the short note on the ticket
 ALLOWED_PREFIXES = ("app/routes/", "app/lib/", "app/models/", "app/test/server/")
 TEST_PREFIX = "app/test/"
 MAX_FILES = 10
@@ -344,13 +348,26 @@ def render(results, pr, finding, now=None, secret=None):
     return body
 
 
-def post_comment(client, number, body):
-    """One evidence comment per pull request: update ours if it exists, else create it."""
+def render_summary(results, pr, finding, repo, comment_url):
+    """The short note for the ticket (spec section 4): the verdict, one line per check, and the links."""
+    ok, verdict = overall(results)
+    out = [SUMMARY_MARKER, "## Evidence (M2-8)", "",
+           f"**{verdict}**" if ok else f"**The fix did not verify cleanly. {verdict}**", ""]
+    out += [f"- {title}: **{LABEL[results[key]['status']]}**" for title, key in CHECKS]
+    out += ["", f"Pull request #{pr['number']}: https://github.com/{repo}/pull/{pr['number']}",
+            f"Full evidence: {comment_url}", "",
+            "Evidence only. Nothing was merged or decided by this step. No model call."]
+    return "\n".join(out) + "\n"
+
+
+def post_comment(client, number, body, marker=MARKER):
+    """One comment per marker: update ours if it exists, else create it. Returns (action, id, url)."""
     for c in client.list_issue_comments(number):
-        if MARKER in (c.get("body") or ""):
-            client.update_issue_comment(c["id"], body)
-            return "updated", c["id"]
-    return "created", client.create_issue_comment(number, body)["id"]
+        if marker in (c.get("body") or ""):
+            done = client.update_issue_comment(c["id"], body)
+            return "updated", c["id"], done.get("html_url")
+    done = client.create_issue_comment(number, body)
+    return "created", done["id"], done.get("html_url")
 
 
 # ---------- GitHub reads ----------
@@ -445,10 +462,19 @@ def main(argv=None, env=None, transport=None):
         if args.post:
             try:
                 _, client = _client(env, args.repo, transport)
-                action, cid = post_comment(client, args.pr, body)
+                action, cid, url = post_comment(client, args.pr, body)
             except (VerifyError, GitHubError) as e:
                 return fail(f"the comment was not posted ({e}). The text is saved in {args.dir}/comment.md", 3)
             print(f"verify: evidence comment {action} on pull request #{args.pr} (comment {cid})")
+            summary = render_summary(results, pr, finding, args.repo,
+                                     url or f"https://github.com/{args.repo}/pull/{args.pr}")
+            _write(args.dir, "summary.md", summary)
+            try:
+                action, cid, _ = post_comment(client, finding["issue"], summary, SUMMARY_MARKER)
+            except (VerifyError, GitHubError) as e:
+                return fail(f"the summary on issue #{finding['issue']} was not posted ({e}). The pull request "
+                            f"comment was posted. The text is saved in {args.dir}/summary.md", 3)
+            print(f"verify: evidence summary {action} on issue #{finding['issue']} (comment {cid})")
         return 0 if ok else 1
     except (VerifyError, GitHubError, OSError) as e:
         return fail(str(e))

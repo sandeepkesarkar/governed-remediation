@@ -329,14 +329,14 @@ def client(*answers):
 
 
 def test_post_creates_the_comment_when_none_has_the_marker():
-    c, t = client((200, [{"id": 1, "body": "hello"}]), (201, {"id": 2}))
-    assert ev.post_comment(c, 13, ev.MARKER + "\nbody") == ("created", 2)
+    c, t = client((200, [{"id": 1, "body": "hello"}]), (201, {"id": 2, "html_url": "u2"}))
+    assert ev.post_comment(c, 13, ev.MARKER + "\nbody") == ("created", 2, "u2")
     assert t.calls[1][0] == "POST" and t.calls[1][1].endswith("/issues/13/comments")
 
 
 def test_post_updates_its_own_comment_instead_of_adding_another():
-    c, t = client((200, [{"id": 7, "body": ev.MARKER + "\nold"}]), (200, {"id": 7}))
-    assert ev.post_comment(c, 13, ev.MARKER + "\nnew") == ("updated", 7)
+    c, t = client((200, [{"id": 7, "body": ev.MARKER + "\nold"}]), (200, {"id": 7, "html_url": "u7"}))
+    assert ev.post_comment(c, 13, ev.MARKER + "\nnew") == ("updated", 7, "u7")
     assert t.calls[1][0] == "PATCH" and t.calls[1][1].endswith("/issues/comments/7")
 
 
@@ -399,7 +399,7 @@ def test_finding_from_issue_reads_the_fingerprint_marker():
 
 def test_cli_pr_info_scope_and_report_round_trip(tmp_path, monkeypatch):
     t = Transport((200, pr_json()), (200, {"number": 3, "body": "<!-- gr:fingerprint app/routes/login.ts:34:CWE-89 -->"}))
-    env = {"GITHUB_TOKEN": TOKEN}
+    env = {"GITHUB_VERIFY_TOKEN": TOKEN}
     assert ev.main(["pr-info", "--repo", "o/r", "--pr", "13", "--dir", str(tmp_path)], env=env, transport=t) == 0
     assert json.loads((tmp_path / "pr.json").read_text())["head_sha"] == SHA
     assert json.loads((tmp_path / "finding.json").read_text())["cwe"] == "CWE-89"
@@ -414,12 +414,17 @@ def test_cli_pr_info_scope_and_report_round_trip(tmp_path, monkeypatch):
     assert (tmp_path / "changed-sources.txt").read_text() == ""
 
     full_run(tmp_path)
-    t2 = Transport((200, []), (201, {"id": 5}))
+    t2 = Transport((200, []), (201, {"id": 5, "html_url": "https://github.com/o/r/pull/13#issuecomment-5"}),
+                   (200, []), (201, {"id": 6, "html_url": "x"}))
     code = ev.main(["report", "--dir", str(tmp_path), "--repo", "o/r", "--pr", "13", "--post"],
                    env=env, transport=t2)
     assert code == 0
     assert (tmp_path / "comment.md").read_text().startswith(ev.MARKER)
     assert t2.calls[1][2]["body"].startswith(ev.MARKER)
+    summary = t2.calls[3][2]["body"]
+    assert t2.calls[3][1].endswith("/issues/3/comments") and summary.startswith(ev.SUMMARY_MARKER)
+    assert "https://github.com/o/r/pull/13#issuecomment-5" in summary and "https://github.com/o/r/pull/13" in summary
+    assert (tmp_path / "summary.md").read_text() == summary
 
 
 def test_cli_report_exit_codes(tmp_path, capsys):
@@ -427,8 +432,8 @@ def test_cli_report_exit_codes(tmp_path, capsys):
     assert ev.main(["report", "--dir", str(tmp_path), "--repo", "o/r", "--pr", "13"]) == 0
     suite(tmp_path, "suite-pr", 1, FAIL_OUT)
     assert ev.main(["report", "--dir", str(tmp_path), "--repo", "o/r", "--pr", "13"]) == 1
-    env = {"GITHUB_TOKEN": TOKEN}
-    t = Transport((403, {"message": "no"}))
+    env = {"GITHUB_VERIFY_TOKEN": TOKEN}
+    t = Transport((200, []), (403, {"message": "no"}))
     assert ev.main(["report", "--dir", str(tmp_path), "--repo", "o/r", "--pr", "13", "--post"],
                    env=env, transport=t) == 3
     err = capsys.readouterr().err
@@ -440,7 +445,7 @@ def test_cli_pr_info_failures(tmp_path, capsys):
     assert ev.main(["pr-info", "--repo", "o/r", "--pr", "13", "--dir", str(tmp_path)], env={}) == 1
     t = Transport((200, pr_json(state="closed")))
     assert ev.main(["pr-info", "--repo", "o/r", "--pr", "13", "--dir", str(tmp_path)],
-                   env={"GITHUB_TOKEN": TOKEN}, transport=t) == 1
+                   env={"GITHUB_VERIFY_TOKEN": TOKEN}, transport=t) == 1
     assert "not open" in capsys.readouterr().err
     assert ev.main(["scope", "--dir", str(tmp_path / "missing")]) == 1
 
@@ -470,3 +475,22 @@ def test_exploit_error_shows_the_app_log_when_the_container_did_not_start(tmp_pa
     put(tmp_path, "app.log", "Error: boom\n")
     r = ev.check_exploit(tmp_path)
     assert r["status"] == ev.ERROR and "boom" in r["output"][0][1]
+
+
+def test_summary_is_short_links_both_and_has_its_own_marker(tmp_path):
+    full_run(tmp_path)
+    results = ev.evaluate(tmp_path)
+    text = ev.render_summary(results, PR, FINDING, "o/r", "https://github.com/o/r/pull/13#issuecomment-5")
+    assert text.startswith(ev.SUMMARY_MARKER) and ev.MARKER not in text
+    assert "All four checks passed" in text and "#13" in text and len(text) < 1500
+    results["suite"] = {"status": ev.FAIL, "headline": "h", "lines": [], "output": []}
+    assert "did not verify cleanly" in ev.render_summary(results, PR, FINDING, "o/r", "u")
+
+
+def test_issue_summary_failure_is_reported_after_the_pr_comment_was_posted(tmp_path, capsys):
+    full_run(tmp_path)
+    t = Transport((200, []), (201, {"id": 5, "html_url": "u"}), (200, []), (403, {"message": "no"}))
+    code = ev.main(["report", "--dir", str(tmp_path), "--repo", "o/r", "--pr", "13", "--post"],
+                   env={"GITHUB_VERIFY_TOKEN": TOKEN}, transport=t)
+    err = capsys.readouterr().err
+    assert code == 3 and "issue #3" in err and "summary.md" in err and TOKEN not in err

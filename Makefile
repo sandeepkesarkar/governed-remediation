@@ -160,7 +160,7 @@ fix-publish-saved:
 	@scripts/fix.sh --publish-only
 
 # Step "verify" (specs/M2-thin-slice.md, plan M2-8). NO model call, no cost. Builds, tests, re-scans and attacks a
-# throwaway copy of the pull request's code, then posts one evidence comment on it. Needs GITHUB_TOKEN with Issues and Pull requests write. Never merges.
+# throwaway copy of the pull request's code, then posts one evidence comment on it and a short summary on the issue. Needs GITHUB_VERIFY_TOKEN. Never merges.
 PR ?= 13
 verify:
 	@scripts/verify.sh $(PR)

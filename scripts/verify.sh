@@ -8,7 +8,7 @@
 # request's own branch, exported with "git archive" into out/verify. The branch is never checked out here.
 # It is AI-written code from an issue, so it only ever runs in throwaway containers.
 #
-#   1. read     The pull request and the issue it closes (GITHUB_TOKEN, read use). Fork pull requests are refused.
+#   1. read     The pull request and the issue it closes (GITHUB_VERIFY_TOKEN). Fork pull requests are refused.
 #   2. scope    The change list must be plain files in the folders the fix step may touch. If not, nothing from
 #               the pull request is run, and the comment says so.
 #   3. build    The pull request's app/ is built into a throwaway image with the same pinned build as "make build-app".
@@ -19,7 +19,8 @@
 #   5. scan     The same Semgrep step as "make scan", on the pull request's app/. The finding must be gone.
 #   6. exploit  A throwaway container of the build on its OWN internal network (no route out, no published port).
 #               scripts/exploit.sh runs unchanged against it. A legitimate login is checked too.
-#   7. comment  One evidence comment on the pull request, whatever the outcome.
+#   7. comment  One evidence comment on the pull request, whatever the outcome, and a short linked summary on the
+#               issue it closes. Both use GITHUB_VERIFY_TOKEN (Issues and Pull requests write, nothing else).
 #
 # It never touches the real app (gr-juice-shop), project-net or exploit-net. Every object it makes carries the
 # project label and is removed on every way out of this script.
@@ -54,7 +55,7 @@ trap clear_all EXIT
 trap 'exit 1' INT TERM
 
 docker info >/dev/null 2>&1 || die "Docker is not running. Start Rancher Desktop: rdctl start"
-[ -n "$(env_value GITHUB_TOKEN)" ] || die "GITHUB_TOKEN is not set (names are in .env.example)"
+[ -n "$(env_value GITHUB_VERIFY_TOKEN)" ] || die "GITHUB_VERIFY_TOKEN is not set (names are in .env.example)"
 NODE_REF=${NODE_REF:?}
 remote=$(git remote get-url origin 2>/dev/null) || die "no git remote named origin"
 repo=$(printf '%s' "$remote" | sed -e 's#^git@github.com:##' -e 's#^https://github.com/##' -e 's#\.git$##')
@@ -65,7 +66,7 @@ py() {   # no token. PYNET puts it on one network (the login check must reach th
     -v "$PWD/agents:/repo/agents:ro" -v "$PWD/$D:/repo/$D" -w /repo "$PY_IMAGE" python -m "$@"
 }
 pyt() {  # with the GitHub token
-  GITHUB_TOKEN=$(env_value GITHUB_TOKEN) docker run --rm --label "$LABEL" -e GITHUB_TOKEN -e PYTHONDONTWRITEBYTECODE=1 \
+  GITHUB_VERIFY_TOKEN=$(env_value GITHUB_VERIFY_TOKEN) docker run --rm --label "$LABEL" -e GITHUB_VERIFY_TOKEN -e PYTHONDONTWRITEBYTECODE=1 \
     -v "$PWD/agents:/repo/agents:ro" -v "$PWD/$D:/repo/$D" -w /repo "$PY_IMAGE" python -m "$@"
 }
 
