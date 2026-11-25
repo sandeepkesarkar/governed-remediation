@@ -67,11 +67,14 @@ Comments written by our scripts start with a hidden marker line (`<!-- gr:verdic
 | Step | Needs |
 |---|---|
 | up, scan, exploit | Nothing. No key, no cost. |
-| ticket | The GitHub token from M0-9 (Issues read and write, Metadata read). Tested first with a fake client, so no token is needed until the first real run. |
-| fix | The Anthropic key. **Paid.** |
-| verify, deploy, confirm | The token for the evidence comment. Uses no model (section 7, decision 2). |
+| ticket | `GITHUB_TOKEN`: Issues read and write, Metadata read (M0-9). |
+| fix | The Anthropic key. **Paid.** `GITHUB_FIX_TOKEN` to open the pull request: Contents and Pull requests write, this repo only. |
+| verify | `GITHUB_VERIFY_TOKEN`: Issues and Pull requests write, no Contents. It posts the evidence comment on the pull request and a short summary on the issue. Uses no model (section 7, decision 2). |
+| deploy, confirm | Not built yet. Their needs are set when M2-10 starts. |
 
-Paid calls need the owner's go-ahead in that session, and the spending limit (M0-6) must be done first. The pull request token (Pull requests and Contents write) is a second token, made at M2-7.
+Three GitHub tokens, each with one job. `docs/ENVIRONMENT.md` has the table and how each is made.
+
+Paid calls need the owner's go-ahead in that session, and the spending limit (M0-6) must be done first.
 
 ## 6. Test plan
 
