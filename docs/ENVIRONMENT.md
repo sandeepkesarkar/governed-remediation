@@ -1,6 +1,6 @@
 # Environment
 
-What the project runs on today. Recorded on 2026-11-12.
+What the project runs on today. First recorded on 2026-11-12. Last updated on 2026-11-25 (through M2-8).
 
 ## Machine
 
