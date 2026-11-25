@@ -198,3 +198,27 @@ class GitHubClient:
         if not isinstance(data, list):
             raise GitHubError("GitHub gave an unexpected answer for the pull request list")
         return data
+
+    # ---- the verify step: read a pull request, post or update one evidence comment ----
+
+    def get_pull_request(self, number):
+        return self._checked("GET", f"/repos/{self.repo}/pulls/{int(number)}")
+
+    def list_issue_comments(self, number):
+        """All comments on an issue or pull request (a pull request is an issue for comments)."""
+        out = []
+        for page in range(1, MAX_PAGES + 1):
+            q = urllib.parse.urlencode({"per_page": PER_PAGE, "page": page})
+            data = self._checked("GET", f"/repos/{self.repo}/issues/{int(number)}/comments?{q}")
+            if not isinstance(data, list):
+                raise GitHubError("GitHub gave an unexpected answer for the comment list")
+            out.extend(data)
+            if len(data) < PER_PAGE:
+                return out
+        raise GitHubError(f"too many comments to list (more than {MAX_PAGES * PER_PAGE})")
+
+    def create_issue_comment(self, number, body):
+        return self._checked("POST", f"/repos/{self.repo}/issues/{int(number)}/comments", {"body": body})
+
+    def update_issue_comment(self, comment_id, body):
+        return self._checked("PATCH", f"/repos/{self.repo}/issues/comments/{int(comment_id)}", {"body": body})

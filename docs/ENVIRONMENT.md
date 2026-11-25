@@ -130,9 +130,14 @@ The script refuses to target anything but the app's own compose service name (`j
 |---|---|---|---|
 | `GITHUB_TOKEN` | Ticket step. The fix step reads one issue with it. | Fine-grained, this repository only: Issues read and write, Metadata read. 30-day expiry (M0-9). | A one-off python container. |
 | `GITHUB_FIX_TOKEN` | The publish script of the fix step only | Fine-grained, this repository only: Contents read and write, Pull requests read and write, Metadata read. 30-day expiry. Created for M2-7. | A one-off python container that runs `agents.fixer_agent.publish`. **Never** the OpenHands sandbox or the client container. `scripts/fix.sh` inspects both containers and stops if any credential variable, or the value of any token, is there. |
+| `GITHUB_VERIFY_TOKEN` | The verify step only (`scripts/verify.sh`) | Fine-grained, this repository only: Issues read and write, Pull requests read and write, Metadata read. **No Contents.** 30-day expiry. Created for M2-8. | A one-off python container that runs `agents.verify_agent.evidence`. It reads the pull request and the issue and posts two comments (the full evidence on the pull request, a short summary on the issue). It is never given to the test container or the throwaway app. |
 | `ANTHROPIC_API_KEY` | The fix client container | A key with the owner's spending limit (M0-6). | The client container. The client sends it to the sandbox inside the conversation request, so the agent can reach it in memory. See `docs/spikes/S2a-fixer-openhands.md`. |
 
-All three live in the local `.env` (git ignores it). `.env.example` lists the names only.
+All four live in the local `.env` (git ignores it). `.env.example` lists the names only.
+
+### Creating `GITHUB_VERIFY_TOKEN`
+
+The same steps as below, with these differences: repository permissions Issues **Read and write** and Pull requests **Read and write** (Metadata read is added), and **no Contents**. Add a line `GITHUB_VERIFY_TOKEN=<the token>` to `.env`. GitHub's answer for a comment on a pull request is `issues=write; pull_requests=write`, and Issues alone gets HTTP 403 (found in M2-8).
 
 ### Creating `GITHUB_FIX_TOKEN`
 
@@ -141,3 +146,7 @@ All three live in the local `.env` (git ignores it). `.env.example` lists the na
 3. Expiration: 30 days.
 4. Repository permissions: Contents **Read and write**, Pull requests **Read and write**. Metadata is added as read only. Nothing else.
 5. Copy the token once. Add a line `GITHUB_FIX_TOKEN=<the token>` to `.env`. Do not paste it into a chat, a terminal history or a file that is tracked.
+
+## Verify step
+
+`make verify PR=13` (`scripts/verify.sh`). No model call. Uses only images already pinned above: the Node image (`NODE_REF` in the `Makefile`, for the test container and the build), the pinned Semgrep image and the pinned Python image. Objects it creates, all labelled and removed on exit: containers `gr-verify-tests` and `gr-verify-app`, networks `gr-verify-testnet` (install only) and `gr-verify-net` (`internal`, no route out), image `governed-remediation/juice-shop:verify-pr<N>`. The test container runs with every capability dropped, 3 GB memory and no mounts, and has no network once dependencies are installed. Needs `GITHUB_VERIFY_TOKEN` (see Tokens). Takes about 15 minutes, most of it the image build and `npm install`.

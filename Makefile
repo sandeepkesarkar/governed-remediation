@@ -5,7 +5,7 @@ FILTER      := label=$(LABEL_KEY)=$(LABEL_VALUE)
 # Images pulled from a registry carry no label. They are listed here and removed by name.
 PULLED      := spikes/pulled-images.txt
 
-.PHONY: help list clean-all diagrams build-app up down check-up test-up scan test test-scan scan-secrets ticket exploit test-network-isolation build-fixer-client fix fix-dry-run check-banned-terms test-banned-terms test-isolation fix-publish-saved
+.PHONY: help list clean-all diagrams build-app up down check-up test-up scan test test-scan scan-secrets ticket exploit test-network-isolation build-fixer-client fix fix-dry-run check-banned-terms test-banned-terms test-isolation fix-publish-saved verify
 
 help:
 	@echo "make list       Show everything labelled $(LABEL_KEY)=$(LABEL_VALUE)"
@@ -27,6 +27,7 @@ help:
 	@echo "make test-banned-terms  Test the banned-terms check (uses temporary terms files)"
 	@echo "make fix-publish-saved  Publish the run saved in out/fix (no model call). Checks the saved run first"
 	@echo "make test-isolation  Test the isolation check of the fix step (starts small containers, some built to fail)"
+	@echo "make verify    Step verify (no model call): evidence for a fix pull request (PR=13), posted as one comment on it"
 	@echo "make test       Run the Python tests with coverage (at least 90 percent)"
 	@echo "make scan-secrets  Secrets scan of the tracked files (gitleaks, path allowlist in .gitleaks.toml)"
 	@echo "make test-scan  Test the failure cases of the scan step (runs Semgrep three times)"
@@ -71,14 +72,17 @@ diagrams:
 # contexts, so nothing inside app/ is edited. The image carries the project label.
 JS_IMAGE      := governed-remediation/juice-shop:v20.0.0-local
 JS_COMMIT     := f356a09207c7a9550eb6fc4c3945e081922cf998
-NODE_BASE     := docker-image://docker.io/library/node:24@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496
+NODE_REF      := docker.io/library/node:24@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496
+NODE_BASE     := docker-image://$(NODE_REF)
+# The verify step builds a pull request's exported app/ with these same pins: make build-app JS_IMAGE=... APP_DIR=...
+APP_DIR       ?= app
 DISTROLESS    := docker-image://gcr.io/distroless/nodejs24-debian13@sha256:24bc0fe0225c7518f202a822587dad74fe143b96326b81fe5cc08c1df8bed03e
 build-app:
 	docker build --label $(LABEL_KEY)=$(LABEL_VALUE) \
 	  --build-context node:24=$(NODE_BASE) \
 	  --build-context gcr.io/distroless/nodejs24-debian13=$(DISTROLESS) \
 	  --build-arg VCS_REF=$(JS_COMMIT) --build-arg BUILD_DATE=2026-11-18 \
-	  -t $(JS_IMAGE) app
+	  -t $(JS_IMAGE) $(APP_DIR)
 
 # Step "up" (specs/M2-thin-slice.md). Builds the image first if it is missing.
 up:
@@ -154,3 +158,9 @@ test-isolation:
 # Publishes a run already saved in out/fix, after checking from its recorded results that it was clean. No model call.
 fix-publish-saved:
 	@scripts/fix.sh --publish-only
+
+# Step "verify" (specs/M2-thin-slice.md, plan M2-8). NO model call, no cost. Builds, tests, re-scans and attacks a
+# throwaway copy of the pull request's code, then posts one evidence comment on it and a short summary on the issue. Needs GITHUB_VERIFY_TOKEN. Never merges.
+PR ?= 13
+verify:
+	@scripts/verify.sh $(PR)
